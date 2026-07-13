@@ -1,0 +1,256 @@
+import streamlit as st
+from fpdf import FPDF
+from datetime import datetime, timedelta
+import pandas as pd
+import requests
+import io
+
+# --- 1. CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Cotizador de upsells - Casa Dorada", page_icon="🏨", layout="wide")
+
+# --- 2. CONEXIÓN DIRECTA Y MEMORIA INTERNA (CACHE) ---
+# Al usar st.connection("gsheets"), Streamlit descarga las hojas directo a la memoria interna
+try:
+    conn = st.connection("gsheets", type="streamlit_gsheets.GSheetsConnection")
+    
+    # Descarga única de la Hoja 1 (Configuración)
+    df_config = conn.read(sheet="1", ttl="10m")
+    
+    # Descarga única de la Hoja 2 (Calendario de Tarifas Dinámicas por Día)
+    df_calendario_raw = conn.read(sheet="2", ttl="10m")
+except Exception as e:
+    df_config = None
+    df_calendario_raw = None
+    st.sidebar.error(f"Aviso: Usando tarifas base. Error de conexión local: {str(e)}")
+
+# --- 3. PROCESAR CONFIGURACIÓN DE DRIVE ---
+tc_base = 17.40
+desc_base = 62.0
+
+if df_config is not None:
+    try:
+        df_config.columns = [str(c).strip().lower() for c in df_config.columns]
+        df_config['parametro'] = df_config['parametro'].astype(str).str.strip().str.lower()
+        
+        fila_desc = df_config[df_config['parametro'] == 'descuento']
+        fila_tc = df_config[df_config['parametro'] == 'tc']
+        
+        if not fila_desc.empty:
+            desc_base = float(str(fila_desc['valor'].values[0]).replace('%', '').replace(',', '.').strip())
+        if not fila_tc.empty:
+            tc_base = float(str(fila_tc['valor'].values[0]).replace(',', '.').strip())
+    except Exception:
+        pass
+
+# --- 4. INDEXAR CALENDARIO DE TARIFAS EN MEMORIA LOCAL ---
+tarifas_por_dia_memoria = {}
+if df_calendario_raw is not None and not df_calendario_raw.empty:
+    try:
+        # Forzar nombres limpios a las columnas
+        df_calendario_raw.columns = [str(c).strip() for c in df_calendario_raw.columns]
+        
+        # Mapeo físico: Columna 0 = Date, Columna 1 = Rate
+        col_fecha = df_calendario_raw.iloc[:, 0]
+        col_tarifa = df_calendario_raw.iloc[:, 1]
+        
+        # Conversión masiva ultra rápida de fechas
+        fechas_transformadas = pd.to_datetime(col_fecha.astype(str).str.strip(), errors='coerce', dayfirst=True)
+        fechas_texto = fechas_transformadas.dt.strftime('%Y-%m-%d')
+        
+        # Conversión masiva de precios ($500,00 -> 500.00)
+        precios_limpios = pd.to_numeric(col_tarifa.astype(str).str.replace(' ', '').str.replace('$', '').str.replace(',', '.').strip(), errors='coerce')
+        
+        # Guardamos todo en un diccionario nativo de Python dentro de la memoria local
+        for f, p in zip(fechas_texto, precios_limpios):
+            if pd.notna(f) and pd.notna(p):
+                tarifas_por_dia_memoria[f] = float(p)
+                
+        st.sidebar.success(f"📈 {len(tarifas_por_dia_memoria)} días de tarifas indexados en memoria local.")
+    except Exception as e:
+        st.sidebar.error(f"Error al indexar tarifas: {str(e)}")
+
+# --- 5. PANEL LATERAL (SIDEBAR) ---
+with st.sidebar:
+    st.header("Configuración")
+    st.metric("Descuento Aplicado", f"{desc_base}%")
+    
+    tc_actual = st.number_input(
+        "Tipo de Cambio (MXN)",
+        min_value=1.0,
+        value=float(tc_base),
+        step=0.1,
+        format="%.2f"
+    )
+    
+    st.divider()
+    if st.button("🔄 Sincronizar y Forzar Descarga de Drive"):
+        st.cache_data.clear()
+        st.rerun()
+
+# --- 6. INTERFAZ PRINCIPAL ---
+st.title("🏨 Cotizador de upsells - Temporadas Dinámicas")
+
+col_nom, col_fol = st.columns(2)
+with col_nom: cliente = st.text_input("Nombre del Huésped", value="")
+with col_fol: n_reserva = st.text_input("Número de Confirmación", value="")
+
+col_in, col_out = st.columns(2)
+with col_in: check_in = st.date_input("Check-in", datetime.now().date())
+with col_out: check_out = st.date_input("Check-out", datetime.now().date() + timedelta(days=1))
+
+noches = (check_out - check_in).days if check_out and check_in else 1
+
+# Tabla de diferenciales base fijos por categoría
+valores_habitaciones = {
+    "Standard Two Double Beds": 0.0, "Junior Suite": 75.0, "Deluxe Suite": 0.0,
+    "Executive Suite": 150.0, "One Bedroom Suite Garden": 225.0, "One Bedroom Suite": 300.0,
+    "1 Bedroom Suite Plus": 375.0, "1 Bedroom Ocean Front": 475.0, "2 Bedroom Suite": 780.0,
+    "2 Bedroom Ocean Front": 980.0, "Penthouse 1PH": 1125.0,
+    "Penthouse 2PH": 1875.0, "Penthouse 3PH": 2625.0
+}
+
+col_cat1, col_cat2 = st.columns(2)
+with col_cat1: cat_orig = st.selectbox("Categoría Original", list(valores_habitaciones.keys()))
+with col_cat2: cat_dest = st.selectbox("Upgrade a Categoría", list(valores_habitaciones.keys()), index=1)
+
+st.divider()
+
+# --- 7. CÁLCULO EN MILISEGUNDOS MEDIANTE MEMORIA LOCAL ---
+if noches <= 0:
+    st.error("La fecha de salida debe ser posterior a la de entrada.")
+else:
+    total_factor_estancia = 0.0
+    fechas_no_encontradas = 0
+    
+    # Buscamos noche por noche en el diccionario local (no toca el Drive aquí)
+    for n in range(noches):
+        fecha_noche_texto = (check_in + timedelta(days=n)).strftime('%Y-%m-%d')
+        
+        if fecha_noche_texto in tarifas_por_dia_memoria:
+            total_factor_estancia += tarifas_por_dia_memoria[fecha_noche_texto]
+        else:
+            fechas_no_encontradas += 1
+
+    gap_fijo_base = valores_habitaciones.get(cat_dest, 0.0) - valores_habitaciones.get(cat_orig, 0.0)
+    
+    # Si encontramos las fechas en memoria, multiplicamos por el factor estacional diario
+    if fechas_no_encontradas == 0 and total_factor_estancia > 0:
+        factor_promedio_estancia = total_factor_estancia / noches
+        p_noche = (gap_fijo_base * factor_promedio_estancia) * (1 - desc_base/100) * 1.30
+    else:
+        if df_calendario_raw is not None:
+            st.warning("⚠️ Nota: Algunas fechas seleccionadas no se encontraron en el calendario de la Hoja 2. Se aplicó tarifa plana de respaldo.")
+        p_noche = (gap_fijo_base * (1 - desc_base/100)) * 1.30
+
+    t_usd = p_noche * noches
+    t_mxn = t_usd * tc_actual
+    c_reserva = n_reserva if n_reserva.strip() else "Sin_Numero"
+
+    # Mostrar Métricas en pantalla
+    res1, res2, res3, res4 = st.columns(4)
+    res1.metric("Noches", f"{noches}")
+    res2.metric("USD / Noche (Dinámico)", f"${p_noche:,.2f}")
+    res3.metric("Total USD", f"${t_usd:,.2f}")
+    res4.metric("Total MXN", f"${t_mxn:,.2f}")
+
+    # --- 8. GENERACIÓN SEGURA DE PDF DE DESCARGA ---
+    def generar_pdf_bytes():
+        pdf = FPDF()
+        pdf.add_page()
+        
+        try:
+            r = requests.get(LOGO_URL, timeout=3)
+            if r.status_code == 200:
+                pdf.image(io.BytesIO(r.content), x=10, y=10, w=50)
+        except Exception:
+            pdf.set_font("Helvetica", 'B', 12)
+            pdf.cell(0, 10, "CASA DORADA LOS CABOS", ln=True)
+
+        pdf.ln(30)
+        pdf.set_font("Helvetica", 'B', 16)
+        pdf.cell(0, 10, "ROOM UPGRADE AGREEMENT", ln=True, align='R')
+        pdf.set_font("Helvetica", '', 10)
+        pdf.cell(0, 5, f"Date: {datetime.now().strftime('%d/%m/%Y')}", ln=True, align='R')
+        pdf.ln(10)
+
+        # Información del Huésped
+        pdf.set_fill_color(30, 55, 110) 
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", 'B', 11)
+        pdf.cell(0, 8, "   GUEST INFORMATION", ln=True, fill=True)
+        
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Helvetica", '', 11)
+        pdf.ln(2)
+        
+        g_name = cliente.upper() if cliente else "VALUED GUEST"
+        pdf.cell(95, 8, f"Guest: {g_name}".encode('latin-1', 'replace').decode('latin-1'))
+        pdf.cell(95, 8, f"Confirmation: {c_reserva}".encode('latin-1', 'replace').decode('latin-1'), ln=True)
+        pdf.cell(95, 8, f"Check-in: {check_in.strftime('%d %b, %Y')}")
+        pdf.cell(95, 8, f"Check-out: {check_out.strftime('%d %b, %Y')}", ln=True)
+        pdf.cell(95, 8, f"Number of Nights: {noches}", ln=True)
+        pdf.ln(5)
+
+        # Detalles del Upgrade
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", 'B', 11)
+        pdf.cell(0, 8, "   ROOM UPGRADE DETAILS", ln=True, fill=True)
+        
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(2)
+        pdf.set_fill_color(240, 240, 240)
+        pdf.set_font("Helvetica", 'B', 10)
+        pdf.cell(60, 10, "   Original Room:", border='B', fill=True)
+        pdf.set_font("Helvetica", '', 10)
+        pdf.cell(130, 10, f"   {cat_orig}".encode('latin-1', 'replace').decode('latin-1'), border='B', ln=True)
+        
+        pdf.set_fill_color(230, 240, 255) 
+        pdf.set_font("Helvetica", 'B', 10)
+        pdf.cell(60, 12, "   UPGRADED TO:", border='B', fill=True)
+        pdf.set_font("Helvetica", 'B', 11)
+        pdf.cell(130, 12, f"   {cat_dest}".encode('latin-1', 'replace').decode('latin-1'), border='B', ln=True)
+        pdf.ln(5)
+
+        # Costos final
+        pdf.set_font("Helvetica", '', 11)
+        pdf.cell(120, 10, f"Upgrade Fee per Night ({noches} nights):")
+        pdf.cell(70, 10, f"USD ${p_noche:,.2f}", align='R', ln=True)
+        
+        pdf.set_font("Helvetica", 'B', 12)
+        pdf.cell(120, 10, "Total Upgrade Fee (Including Taxes):", border='T')
+        pdf.set_font("Helvetica", 'B', 14)
+        pdf.cell(70, 10, f"USD ${t_usd:,.2f}", border='T', align='R', ln=True)
+        
+        pdf.set_font("Helvetica", 'I', 10)
+        pdf.cell(120, 8, f"Exchange Rate / Tipo de Cambio (1 USD = {tc_actual} MXN):")
+        pdf.set_font("Helvetica", 'B', 12)
+        pdf.cell(70, 8, f"MXN ${t_mxn:,.2f}", align='R', ln=True)
+        
+        pdf.ln(15)
+        pdf.set_font("Helvetica", 'I', 9)
+        
+        terminos_texto = (
+            "Terms: This upgrade is non-refundable and applies for the entire stay. "
+            "In the event of an early departure, no refund will be issued for the upsell.\n"
+            "Este upgrade no es reembolsable y aplica por la estancia completa. "
+            "En caso de salida anticipada, no aplicara ningun reembolso por el upsell."
+        )
+        pdf.multi_cell(0, 5, terminos_texto.encode('latin-1', 'replace').decode('latin-1'))
+        
+        pdf.ln(25)
+        pdf.line(10, pdf.get_y(), 85, pdf.get_y())
+        pdf.line(125, pdf.get_y(), 200, pdf.get_y())
+        pdf.set_font("Helvetica", '', 10)
+        pdf.cell(75, 10, "Guest Signature", align='C')
+        pdf.set_x(125)
+        pdf.cell(75, 10, "Front Office Representative", align='C')
+
+        return bytes(pdf.output())
+
+    # Botón de descarga interactivo
+    st.download_button(
+        label="📥 Descargar PDF de Upgrade", 
+        data=generar_pdf_bytes(), 
+        file_name=f"Upsell_{c_reserva}.pdf", 
+        mime="application/pdf"
+    )
