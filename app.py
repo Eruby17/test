@@ -9,15 +9,12 @@ import io
 st.set_page_config(page_title="Cotizador de upsells - Casa Dorada", page_icon="🏨", layout="wide")
 
 # --- 2. CONEXIÓN DIRECTA Y MEMORIA INTERNA (CACHE) ---
-# Al usar st.connection("gsheets"), Streamlit descarga las hojas directo a la memoria interna
 try:
     conn = st.connection("gsheets", type="streamlit_gsheets.GSheetsConnection")
     
-    # Descarga única de la Hoja 1 (Configuración)
-    df_config = conn.read(sheet="1", ttl="10m")
-    
-    # Descarga única de la Hoja 2 (Calendario de Tarifas Dinámicas por Día)
-    df_calendario_raw = conn.read(sheet="2", ttl="10m")
+    # Se corrige 'sheet' por 'worksheet' para cumplir con la nueva versión de la librería
+    df_config = conn.read(worksheet="1", ttl="10m")
+    df_calendario_raw = conn.read(worksheet="2", ttl="10m")
 except Exception as e:
     df_config = None
     df_calendario_raw = None
@@ -46,21 +43,16 @@ if df_config is not None:
 tarifas_por_dia_memoria = {}
 if df_calendario_raw is not None and not df_calendario_raw.empty:
     try:
-        # Forzar nombres limpios a las columnas
         df_calendario_raw.columns = [str(c).strip() for c in df_calendario_raw.columns]
         
-        # Mapeo físico: Columna 0 = Date, Columna 1 = Rate
         col_fecha = df_calendario_raw.iloc[:, 0]
         col_tarifa = df_calendario_raw.iloc[:, 1]
         
-        # Conversión masiva ultra rápida de fechas
         fechas_transformadas = pd.to_datetime(col_fecha.astype(str).str.strip(), errors='coerce', dayfirst=True)
         fechas_texto = fechas_transformadas.dt.strftime('%Y-%m-%d')
         
-        # Conversión masiva de precios ($500,00 -> 500.00)
         precios_limpios = pd.to_numeric(col_tarifa.astype(str).str.replace(' ', '').str.replace('$', '').str.replace(',', '.').strip(), errors='coerce')
         
-        # Guardamos todo en un diccionario nativo de Python dentro de la memoria local
         for f, p in zip(fechas_texto, precios_limpios):
             if pd.notna(f) and pd.notna(p):
                 tarifas_por_dia_memoria[f] = float(p)
@@ -100,7 +92,6 @@ with col_out: check_out = st.date_input("Check-out", datetime.now().date() + tim
 
 noches = (check_out - check_in).days if check_out and check_in else 1
 
-# Tabla de diferenciales base fijos por categoría
 valores_habitaciones = {
     "Standard Two Double Beds": 0.0, "Junior Suite": 75.0, "Deluxe Suite": 0.0,
     "Executive Suite": 150.0, "One Bedroom Suite Garden": 225.0, "One Bedroom Suite": 300.0,
@@ -115,14 +106,13 @@ with col_cat2: cat_dest = st.selectbox("Upgrade a Categoría", list(valores_habi
 
 st.divider()
 
-# --- 7. CÁLCULO EN MILISEGUNDOS MEDIANTE MEMORIA LOCAL ---
+# --- 7. CÁLCULO MEDIANTE DICCIONARIO EN CACHÉ ---
 if noches <= 0:
     st.error("La fecha de salida debe ser posterior a la de entrada.")
 else:
     total_factor_estancia = 0.0
     fechas_no_encontradas = 0
     
-    # Buscamos noche por noche en el diccionario local (no toca el Drive aquí)
     for n in range(noches):
         fecha_noche_texto = (check_in + timedelta(days=n)).strftime('%Y-%m-%d')
         
@@ -133,7 +123,6 @@ else:
 
     gap_fijo_base = valores_habitaciones.get(cat_dest, 0.0) - valores_habitaciones.get(cat_orig, 0.0)
     
-    # Si encontramos las fechas en memoria, multiplicamos por el factor estacional diario
     if fechas_no_encontradas == 0 and total_factor_estancia > 0:
         factor_promedio_estancia = total_factor_estancia / noches
         p_noche = (gap_fijo_base * factor_promedio_estancia) * (1 - desc_base/100) * 1.30
@@ -146,25 +135,20 @@ else:
     t_mxn = t_usd * tc_actual
     c_reserva = n_reserva if n_reserva.strip() else "Sin_Numero"
 
-    # Mostrar Métricas en pantalla
+    # Mostrar Métricas
     res1, res2, res3, res4 = st.columns(4)
     res1.metric("Noches", f"{noches}")
     res2.metric("USD / Noche (Dinámico)", f"${p_noche:,.2f}")
     res3.metric("Total USD", f"${t_usd:,.2f}")
     res4.metric("Total MXN", f"${t_mxn:,.2f}")
 
-    # --- 8. GENERACIÓN SEGURA DE PDF DE DESCARGA ---
+    # --- 8. GENERACIÓN SEGURA DE PDF ---
     def generar_pdf_bytes():
         pdf = FPDF()
         pdf.add_page()
         
-        try:
-            r = requests.get(LOGO_URL, timeout=3)
-            if r.status_code == 200:
-                pdf.image(io.BytesIO(r.content), x=10, y=10, w=50)
-        except Exception:
-            pdf.set_font("Helvetica", 'B', 12)
-            pdf.cell(0, 10, "CASA DORADA LOS CABOS", ln=True)
+        pdf.set_font("Helvetica", 'B', 12)
+        pdf.cell(0, 10, "CASA DORADA LOS CABOS", ln=True)
 
         pdf.ln(30)
         pdf.set_font("Helvetica", 'B', 16)
@@ -247,7 +231,6 @@ else:
 
         return bytes(pdf.output())
 
-    # Botón de descarga interactivo
     st.download_button(
         label="📥 Descargar PDF de Upgrade", 
         data=generar_pdf_bytes(), 
