@@ -134,8 +134,12 @@ else:
 
     gap_fijo_base = valores_habitaciones.get(cat_dest, 0.0) - valores_habitaciones.get(cat_orig, 0.0)
     
+    # Cálculo Dinámico Estacional Proporcional
     if fechas_no_encontradas == 0 and total_factor_estancia > 0:
         factor_promedio_estancia = total_factor_estancia / noches
+        
+        # NOTA: Si tus datos en Excel son la Tarifa Base en USD por día, la fórmula multiplica el gap por el factor.
+        # Si tus tarifas ya representan la diferencia exacta directa, cambia 'gap_fijo_base * factor_promedio_estancia' por solo 'factor_promedio_estancia'
         p_noche = (gap_fijo_base * factor_promedio_estancia) * (1 - desc_base/100) * 1.30
     else:
         if df_calendario_raw is not None:
