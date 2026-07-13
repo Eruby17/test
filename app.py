@@ -8,9 +8,7 @@ import io
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Cotizador de upsells - Casa Dorada", page_icon="🏨", layout="wide")
 
-# --- 2. ENLACE DE PUBLICACIÓN WEB DIRECTO (INMUNE A FALLAS) ---
-# Usamos tu enlace publicado directamente. Para leer las hojas con pandas sin openpyxl,
-# transformamos la salida a formato plano CSV para máxima estabilidad.
+# --- 2. ENLACE DE PUBLICACIÓN WEB DIRECTO ---
 URL_HOJA_1 = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTa9QMfH9XHV9BTptpHhiMjROI5UdxqY7sQnEPGCC6xTwsQWyRLHt_etNljvwN29hoeYj7wdmOaEdBg/pub?output=csv&gid=481323566"
 URL_HOJA_2 = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTa9QMfH9XHV9BTptpHhiMjROI5UdxqY7sQnEPGCC6xTwsQWyRLHt_etNljvwN29hoeYj7wdmOaEdBg/pub?output=csv&gid=0"
 
@@ -18,20 +16,17 @@ URL_HOJA_2 = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTa9QMfH9XHV9BTptp
 def descargar_datos_directo():
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        
-        # Descarga e interpretación instantánea de la Hoja 1 (Configuración)
         r1 = requests.get(URL_HOJA_1, headers=headers, timeout=10)
         df_c = pd.read_csv(io.StringIO(r1.text)) if r1.status_code == 200 else None
         
-        # Descarga e interpretación instantánea de la Hoja 2 (Calendario de tarifas)
         r2 = requests.get(URL_HOJA_2, headers=headers, timeout=10)
         df_cal = pd.read_csv(io.StringIO(r2.text)) if r2.status_code == 200 else None
         
         return df_c, df_cal
-    except Exception as e:
+    except Exception:
         return None, None
 
-# Ejecutar la descarga única directa a la memoria caché de la app
+# Ejecutar la descarga única directa
 df_config, df_calendario_raw = descargar_datos_directo()
 
 # --- 3. PROCESAR CONFIGURACIÓN DE PARÁMETROS ---
@@ -53,19 +48,19 @@ if df_config is not None and not df_config.empty:
     except Exception:
         pass
 
-# --- 4. INDEXAR CALENDARIO DE TARIFAS DINÁMICAS POR DÍA ---
+# --- 4. INDEXAR CALENDARIO (CORREGIDO ANTI-ERRORES DE TEXTO) ---
 tarifas_por_dia_memoria = {}
 if df_calendario_raw is not None and not df_calendario_raw.empty:
     try:
         df_calendario_raw.columns = [str(c).strip() for c in df_calendario_raw.columns]
         
-        col_fecha = df_calendario_raw.iloc[:, 0]
-        col_tarifa = df_calendario_raw.iloc[:, 1]
+        col_fecha = df_calendario_raw.iloc[:, 0].astype(str).str.strip()
+        col_tarifa = df_calendario_raw.iloc[:, 1].astype(str).str.replace(' ', '').str.replace('$', '').str.replace(',', '.').str.strip()
         
-        fechas_transformadas = pd.to_datetime(col_fecha.astype(str).str.strip(), errors='coerce', dayfirst=True)
+        fechas_transformadas = pd.to_datetime(col_fecha, errors='coerce', dayfirst=True)
         fechas_texto = fechas_transformadas.dt.strftime('%Y-%m-%d')
         
-        precios_limpios = pd.to_numeric(col_tarifa.astype(str).str.replace(' ', '').str.replace('$', '').str.replace(',', '.').strip(), errors='coerce')
+        precios_limpios = pd.to_numeric(col_tarifa, errors='coerce')
         
         for f, p in zip(fechas_texto, precios_limpios):
             if pd.notna(f) and pd.notna(p):
@@ -122,7 +117,7 @@ with col_cat2: cat_dest = st.selectbox("Upgrade a Categoría", list(valores_habi
 
 st.divider()
 
-# --- 7. MATEMÁTICA EN MEMORIA LOCAL SIN CONEXIONES EXTERNAS ---
+# --- 7. MATEMÁTICA EN MEMORIA LOCAL ---
 if noches <= 0:
     st.error("La fecha de salida debe ser posterior a la de entrada.")
 else:
@@ -139,7 +134,6 @@ else:
 
     gap_fijo_base = valores_habitaciones.get(cat_dest, 0.0) - valores_habitaciones.get(cat_orig, 0.0)
     
-    # Si encontramos las tarifas dinámicas en el diccionario, calculamos con factor estacional
     if fechas_no_encontradas == 0 and total_factor_estancia > 0:
         factor_promedio_estancia = total_factor_estancia / noches
         p_noche = (gap_fijo_base * factor_promedio_estancia) * (1 - desc_base/100) * 1.30
@@ -152,7 +146,6 @@ else:
     t_mxn = t_usd * tc_actual
     c_reserva = n_reserva if n_reserva.strip() else "Sin_Numero"
 
-    # Mostrar Métricas en Pantalla
     res1, res2, res3, res4 = st.columns(4)
     res1.metric("Noches", f"{noches}")
     res2.metric("USD / Noche (Dinámico)", f"${p_noche:,.2f}")
