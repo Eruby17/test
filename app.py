@@ -7,13 +7,10 @@ import pandas as pd
 st.set_page_config(page_title="Cotizador de upsells - Casa Dorada", page_icon="🏨", layout="wide")
 
 # --- 2. BASE DE DATOS LOCAL EN MEMORIA (ESTADO DE SESIÓN) ---
-# Definimos la contraseña del administrador / Revenue
 PASSWORD_ADMIN = "Revenue2026"
 
-# Lista de meses del año
 MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
-# Lista de categorías de habitación
 CATEGORIAS = [
     "Standard Two Double Beds", "Junior Suite", "Deluxe Suite", "Executive Suite",
     "One Bedroom Suite Garden", "One Bedroom Suite", "1 Bedroom Suite Plus",
@@ -21,12 +18,10 @@ CATEGORIAS = [
     "Penthouse 1PH", "Penthouse 2PH", "Penthouse 3PH"
 ]
 
-# Inicializamos la matriz de diferenciales mensuales si no existe en la memoria del servidor
+# Inicializamos la matriz de diferenciales mensuales si no existe
 if 'matriz_diferenciales' not in st.session_state:
-    # Creamos una matriz base por defecto (valores estáticos de respaldo que el Revenue cambiará)
     base_data = {}
     for cat in CATEGORIAS:
-        # Asignamos un valor base simulado que varía un poco según el mes
         base_data[cat] = [
             100 if "Junior" in cat else 200 if "Executive" in cat else 300 if "One Bedroom" in cat else 500 if "2 Bedroom" in cat else 1000 if "Penthouse" in cat else 0 
             for _ in range(12)
@@ -48,7 +43,6 @@ with st.sidebar:
             st.success("Acceso Autorizado")
             st.subheader("Configuración Global")
             
-            # Modificación directa de parámetros globales
             desc_input = st.number_input("Descuento Base (%)", min_value=0.0, max_value=100.0, value=st.session_state['config_global']['descuento'], step=1.0)
             tc_input = st.number_input("Tipo de Cambio Oficial", min_value=1.0, value=st.session_state['config_global']['tc'], step=0.1)
             
@@ -59,7 +53,6 @@ with st.sidebar:
             st.subheader("Editar Diferenciales ($ USD)")
             st.caption("Modifica los valores directamente en la tabla de abajo:")
             
-            # Interfaz interactiva para que el Revenue edite los precios en malla directamente
             df_editado = st.data_editor(st.session_state['matriz_diferenciales'], use_container_width=True)
             st.session_state['matriz_diferenciales'] = df_editado
             
@@ -68,7 +61,6 @@ with st.sidebar:
         elif clave != "":
             st.error("Contraseña Incorrecta")
     else:
-        # Vista normal para Recepción en el menú lateral
         st.metric("Descuento Operativo", f"{st.session_state['config_global']['descuento']}%")
         st.metric("Tipo de Cambio", f"${st.session_state['config_global']['tc']:.2f} MXN")
 
@@ -101,41 +93,32 @@ else:
     if ejecutar_calculo or 'p_noche_estacional' in st.session_state:
         total_diferenciales = 0.0
         
-        # Calculamos la tarifa sumando el valor correspondiente al mes de cada noche
         for n in range(noches):
             fecha_noche = check_in + timedelta(days=n)
-            # Obtenemos el nombre del mes en español basado en el índice
             mes_indice = fecha_noche.month - 1
             nombre_mes = MESES[mes_indice]
             
-            # Extraemos los precios de la matriz modificada por el Revenue
             matriz = st.session_state['matriz_diferenciales']
             tarifa_orig_mes = matriz.loc[nombre_mes, cat_orig]
             tarifa_dest_mes = matriz.loc[nombre_mes, cat_dest]
             
-            # El diferencial justo es la resta entre lo que vale la destino y la origen en ese mes específico
             diferencial_noche = float(tarifa_dest_mes) - float(tarifa_orig_mes)
-            # Si el diferencial da negativo por error de selección, lo dejamos en 0
             total_diferenciales += max(diferencial_noche, 0.0)
 
-        # Promedio del diferencial estacional por noche
         gap_promedio_estacional = total_diferenciales / noches
         
-        # Aplicamos el descuento guardado por el Revenue
         desc_actual = st.session_state['config_global']['descuento']
         tc_actual = st.session_state['config_global']['tc']
         
-        # Fórmula final limpia (Diferencial Neto de Categorías del Mes * Descuento)
         p_noche = gap_promedio_estacional * (1 - desc_actual / 100)
         
-        # Guardamos en sesión
         st.session_state['p_noche_estacional'] = p_noche
         
-        t_usd = p_noche * aches = p_noche * noches
+        # LÍNEA CORREGIDA DE FORMA SEGURA:
+        t_usd = p_noche * noches
         t_mxn = t_usd * tc_actual
         c_reserva = n_reserva if n_reserva.strip() else "Sin_Numero"
 
-        # Mostrar métricas al recepcionista
         res1, res2, res3, res4 = st.columns(4)
         res1.metric("Noches de Estancia", f"{noches}")
         res2.metric("Tarifa Upgrade / Noche", f"${p_noche:,.2f} USD")
