@@ -52,31 +52,55 @@ def obtener_cliente_gspread():
     credentials = Credentials.from_service_account_info(creds_info, scopes=scope)
     return gspread.authorize(credentials)
 
+def limpiar_valor_moneda(val):
+    """Limpia formatos de texto como $150,00 o $100.0 a floats de Python"""
+    if pd.isna(val) or val == "":
+        return 0.0
+    val_str = str(val).strip().replace('$', '').replace(' ', '')
+    # Si tiene comas como separador decimal (ej: 60,00 o 17,40)
+    if ',' in val_str and '.' not in val_str:
+        val_str = val_str.replace(',', '.')
+    elif ',' in val_str and '.' in val_str:
+        # Si tiene comas de miles y punto decimal (ej: 1,200.50)
+        val_str = val_str.replace(',', '')
+    try:
+        return float(val_str)
+    except ValueError:
+        return 0.0
+
 def cargar_datos_desde_drive():
     try:
         gc = obtener_cliente_gspread()
         url_doc = st.secrets["connections"]["gsheets"]["spreadsheet"]
         doc = gc.open_by_url(url_doc)
         
-        # Leer pestaña 'config'
+        # 1. Leer pestaña 'config'
         ws_config = doc.worksheet("config")
         datos_config = ws_config.get_all_records()
         df_c = pd.DataFrame(datos_config)
         
-        # Leer pestaña 'diferenciales'
+        # 2. Leer pestaña 'diferenciales'
         ws_dif = doc.worksheet("diferenciales")
         datos_dif = ws_dif.get_all_records()
         df_d = pd.DataFrame(datos_dif)
-        df_d.set_index("mes", inplace=True)
+        
+        # Normalizar la columna 'mes' a tipo título (Enero, Febrero...)
+        if 'mes' in df_d.columns:
+            df_d['mes'] = df_d['mes'].astype(str).str.strip().str.capitalize()
+            df_d.set_index("mes", inplace=True)
+            
+            # Limpiar el formato de moneda ($0,00) de todas las columnas de la matriz
+            for col in df_d.columns:
+                df_d[col] = df_d[col].apply(limpiar_valor_moneda)
         
         return df_c, df_d, doc
-    except Exception:
-        st.sidebar.warning("⚠️ Sin conexión con Google Drive. Usando base de datos temporal.")
+    except Exception as e:
+        st.sidebar.warning(f"⚠️ Sin conexión con Google Drive: {str(e)}")
         return None, None, None
 
 df_config_raw, df_diferenciales_raw, doc_sheets = cargar_datos_desde_drive()
 
-# Inicializar memoria interna de la aplicación
+# Inicializar memoria interna de la aplicación con los datos limpios de la nube
 if df_diferenciales_raw is not None and 'matriz_diferenciales' not in st.session_state:
     st.session_state['matriz_diferenciales'] = df_diferenciales_raw
 
@@ -84,14 +108,14 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
     config_dict = {}
     for _, fila in df_config_raw.iterrows():
         param = str(fila['parametro']).strip().lower()
-        val = float(str(fila['valor']).replace('%', '').replace(',', '.').strip())
+        val = limpiar_valor_moneda(fila['valor'])
         config_dict[param] = val
     st.session_state['config_global'] = {
-        "descuento": config_dict.get("descuento", 62.0),
+        "descuento": config_dict.get("descuento", 60.0),
         "tc": config_dict.get("tc", 17.40)
     }
 
-# Respaldos internos en caso de fallar Google Sheets al iniciar
+# Respaldos internos de emergencia si falla Google Sheets
 if 'matriz_diferenciales' not in st.session_state:
     base_data = {}
     for cat in CATEGORIAS:
@@ -100,7 +124,7 @@ if 'matriz_diferenciales' not in st.session_state:
     st.session_state['matriz_diferenciales'] = pd.DataFrame(base_data, index=MESES)
 
 if 'config_global' not in st.session_state:
-    st.session_state['config_global'] = {"descuento": 62.0, "tc": 17.40}
+    st.session_state['config_global'] = {"descuento": 60.0, "tc": 17.40}
 
 # --- 3. MENÚ LATERAL: PANEL DE CONTROL DE REVENUE ---
 with st.sidebar:
@@ -121,12 +145,12 @@ with st.sidebar:
             
             st.divider()
             st.subheader("Editar Tarifas ($ USD)")
-            st.info("💡 Modifica el valor de la **Junior Suite** de cualquier mes para recalcular de forma proporcional las demás.")
+            st.info("💡 Modifica la **Junior Suite** de cualquier mes para recalcular proporcionalmente las demás.")
             
             matriz_actual = st.session_state['matriz_diferenciales'].copy()
             df_editado = st.data_editor(matriz_actual, use_container_width=True)
             
-            # Recálculo automático en cascada
+            # Recálculo automático proporcional
             for mes in MESES:
                 valor_junior_actual = st.session_state['matriz_diferenciales'].loc[mes, "Junior Suite"]
                 valor_junior_nuevo = df_editado.loc[mes, "Junior Suite"]
@@ -142,12 +166,14 @@ with st.sidebar:
                 if doc_sheets is not None:
                     try:
                         with st.spinner("Sincronizando con Google Drive..."):
+                            # 1. Guardar pestaña 'config'
                             ws_config = doc_sheets.worksheet("config")
                             ws_config.clear()
                             ws_config.append_row(["parametro", "valor"])
-                            ws_config.append_row(["descuento", st.session_state['config_global']['descuento']])
-                            ws_config.append_row(["tc", st.session_state['config_global']['tc']])
+                            ws_config.append_row(["descuento", str(st.session_state['config_global']['descuento']).replace('.', ',')])
+                            ws_config.append_row(["tc", str(st.session_state['config_global']['tc']).replace('.', ',')])
                             
+                            # 2. Guardar pestaña 'diferenciales'
                             ws_dif = doc_sheets.worksheet("diferenciales")
                             ws_dif.clear()
                             
@@ -157,7 +183,7 @@ with st.sidebar:
                             ws_dif.update([df_subida.columns.values.tolist()] + df_subida.values.tolist())
                             
                             st.success("¡Datos guardados con éxito!")
-                            st.toast("Base de datos actualizada en la nube", icon="☁️")
+                            st.toast("Base de datos actualizada", icon="☁️")
                     except Exception as err:
                         st.error(f"Error al escribir en Google Drive: {str(err)}")
                 else:
@@ -187,7 +213,6 @@ with col_cat2: cat_dest = st.selectbox("Upgrade a Categoría", CATEGORIAS, index
 
 st.divider()
 
-# Botón simplificado de cálculo directo
 ejecutar_calculo = st.button("🧮 Calcular", type="primary")
 
 # --- 5. LÓGICA DE CÁLCULO ---
@@ -235,20 +260,20 @@ else:
             pdf.add_page()
             
             pdf.set_font("Helvetica", 'B', 12)
-            pdf.cell(0, 10, "CASA DORADA LOS CABOS", ln=True)
+            pdf.cell(0, 10, "CASA DORADA LOS CABOS", new_x="LMARGIN", new_y="NEXT")
 
             pdf.ln(25)
             pdf.set_font("Helvetica", 'B', 16)
-            pdf.cell(0, 10, "ROOM UPGRADE AGREEMENT", ln=True, align='R')
+            pdf.cell(0, 10, "ROOM UPGRADE AGREEMENT", align='R', new_x="LMARGIN", new_y="NEXT")
             pdf.set_font("Helvetica", '', 10)
-            pdf.cell(0, 5, f"Date: {datetime.now().strftime('%d/%m/%Y')}", ln=True, align='R')
+            pdf.cell(0, 5, f"Date: {datetime.now().strftime('%d/%m/%Y')}", align='R', new_x="LMARGIN", new_y="NEXT")
             pdf.ln(10)
 
             # Información del Huésped
             pdf.set_fill_color(30, 55, 110) 
             pdf.set_text_color(255, 255, 255)
             pdf.set_font("Helvetica", 'B', 11)
-            pdf.cell(0, 8, "   GUEST INFORMATION", ln=True, fill=True)
+            pdf.cell(0, 8, "   GUEST INFORMATION", fill=True, new_x="LMARGIN", new_y="NEXT")
             
             pdf.set_text_color(0, 0, 0)
             pdf.set_font("Helvetica", '', 11)
@@ -256,16 +281,16 @@ else:
             
             g_name = cliente.upper() if cliente else "VALUED GUEST"
             pdf.cell(95, 8, f"Guest: {g_name}".encode('latin-1', 'replace').decode('latin-1'))
-            pdf.cell(95, 8, f"Confirmation: {c_reserva}".encode('latin-1', 'replace').decode('latin-1'), ln=True)
+            pdf.cell(95, 8, f"Confirmation: {c_reserva}".encode('latin-1', 'replace').decode('latin-1'), new_x="LMARGIN", new_y="NEXT")
             pdf.cell(95, 8, f"Check-in: {check_in.strftime('%d %b, %Y')}")
-            pdf.cell(95, 8, f"Check-out: {check_out.strftime('%d %b, %Y')}", ln=True)
-            pdf.cell(95, 8, f"Number of Nights: {noches}", ln=True)
+            pdf.cell(95, 8, f"Check-out: {check_out.strftime('%d %b, %Y')}", new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(95, 8, f"Number of Nights: {noches}", new_x="LMARGIN", new_y="NEXT")
             pdf.ln(5)
 
             # Detalles del Upgrade
             pdf.set_text_color(255, 255, 255)
             pdf.set_font("Helvetica", 'B', 11)
-            pdf.cell(0, 8, "   ROOM UPGRADE DETAILS", ln=True, fill=True)
+            pdf.cell(0, 8, "   ROOM UPGRADE DETAILS", fill=True, new_x="LMARGIN", new_y="NEXT")
             
             pdf.set_text_color(0, 0, 0)
             pdf.ln(2)
@@ -273,29 +298,29 @@ else:
             pdf.set_font("Helvetica", 'B', 10)
             pdf.cell(60, 10, "   Original Room:", border='B', fill=True)
             pdf.set_font("Helvetica", '', 10)
-            pdf.cell(130, 10, f"   {cat_orig}".encode('latin-1', 'replace').decode('latin-1'), border='B', ln=True)
+            pdf.cell(130, 10, f"   {cat_orig}".encode('latin-1', 'replace').decode('latin-1'), border='B', new_x="LMARGIN", new_y="NEXT")
             
             pdf.set_fill_color(230, 240, 255) 
             pdf.set_font("Helvetica", 'B', 10)
             pdf.cell(60, 12, "   UPGRADED TO:", border='B', fill=True)
             pdf.set_font("Helvetica", 'B', 11)
-            pdf.cell(130, 12, f"   {cat_dest}".encode('latin-1', 'replace').decode('latin-1'), border='B', ln=True)
+            pdf.cell(130, 12, f"   {cat_dest}".encode('latin-1', 'replace').decode('latin-1'), border='B', new_x="LMARGIN", new_y="NEXT")
             pdf.ln(5)
 
             # Costos final
             pdf.set_font("Helvetica", '', 11)
             pdf.cell(120, 10, f"Upgrade Fee per Night ({noches} nights):")
-            pdf.cell(70, 10, f"USD ${p_noche:,.2f}", align='R', ln=True)
+            pdf.cell(70, 10, f"USD ${p_noche:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
             
             pdf.set_font("Helvetica", 'B', 12)
             pdf.cell(120, 10, "Total Upgrade Fee (Including Taxes):", border='T')
             pdf.set_font("Helvetica", 'B', 14)
-            pdf.cell(70, 10, f"USD ${t_usd:,.2f}", border='T', align='R', ln=True)
+            pdf.cell(70, 10, f"USD ${t_usd:,.2f}", border='T', align='R', new_x="LMARGIN", new_y="NEXT")
             
             pdf.set_font("Helvetica", 'I', 10)
             pdf.cell(120, 8, f"Exchange Rate / Tipo de Cambio (1 USD = {tc_actual} MXN):")
             pdf.set_font("Helvetica", 'B', 12)
-            pdf.cell(70, 8, f"MXN ${t_mxn:,.2f}", align='R', ln=True)
+            pdf.cell(70, 8, f"MXN ${t_mxn:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
             
             pdf.ln(15)
             pdf.set_font("Helvetica", 'I', 9)
@@ -318,7 +343,7 @@ else:
 
             return bytes(pdf.output())
 
-        # Botón de descarga directo y sencillo
+        # Botón de descarga
         st.download_button(
             label="📥 Descargar PDF", 
             data=generar_pdf_bytes(), 
