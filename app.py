@@ -2,96 +2,79 @@ import streamlit as st
 from fpdf import FPDF
 from datetime import datetime, timedelta
 import pandas as pd
-import requests
-import io
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Cotizador de upsells - Casa Dorada", page_icon="🏨", layout="wide")
 
-# --- 2. ENLACE DE PUBLICACIÓN WEB DIRECTO ---
-URL_HOJA_1 = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTa9QMfH9XHV9BTptpHhiMjROI5UdxqY7sQnEPGCC6xTwsQWyRLHt_etNljvwN29hoeYj7wdmOaEdBg/pub?output=csv&gid=481323566"
-URL_HOJA_2 = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTa9QMfH9XHV9BTptpHhiMjROI5UdxqY7sQnEPGCC6xTwsQWyRLHt_etNljvwN29hoeYj7wdmOaEdBg/pub?output=csv&gid=0"
+# --- 2. BASE DE DATOS LOCAL EN MEMORIA (ESTADO DE SESIÓN) ---
+# Definimos la contraseña del administrador / Revenue
+PASSWORD_ADMIN = "Revenue2026"
 
-@st.cache_data(ttl=600, show_spinner=False)
-def descargar_datos_directo():
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r1 = requests.get(URL_HOJA_1, headers=headers, timeout=10)
-        df_c = pd.read_csv(io.StringIO(r1.text)) if r1.status_code == 200 else None
-        
-        r2 = requests.get(URL_HOJA_2, headers=headers, timeout=10)
-        df_cal = pd.read_csv(io.StringIO(r2.text)) if r2.status_code == 200 else None
-        
-        return df_c, df_cal
-    except Exception:
-        return None, None
+# Lista de meses del año
+MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
-# Ejecutar la descarga única directa
-df_config, df_calendario_raw = descargar_datos_directo()
+# Lista de categorías de habitación
+CATEGORIAS = [
+    "Standard Two Double Beds", "Junior Suite", "Deluxe Suite", "Executive Suite",
+    "One Bedroom Suite Garden", "One Bedroom Suite", "1 Bedroom Suite Plus",
+    "1 Bedroom Ocean Front", "2 Bedroom Suite", "2 Bedroom Ocean Front",
+    "Penthouse 1PH", "Penthouse 2PH", "Penthouse 3PH"
+]
 
-# --- 3. PROCESAR CONFIGURACIÓN DE PARÁMETROS ---
-tc_base = 17.40
-desc_base = 62.0
+# Inicializamos la matriz de diferenciales mensuales si no existe en la memoria del servidor
+if 'matriz_diferenciales' not in st.session_state:
+    # Creamos una matriz base por defecto (valores estáticos de respaldo que el Revenue cambiará)
+    base_data = {}
+    for cat in CATEGORIAS:
+        # Asignamos un valor base simulado que varía un poco según el mes
+        base_data[cat] = [
+            100 if "Junior" in cat else 200 if "Executive" in cat else 300 if "One Bedroom" in cat else 500 if "2 Bedroom" in cat else 1000 if "Penthouse" in cat else 0 
+            for _ in range(12)
+        ]
+    df_base = pd.DataFrame(base_data, index=MESES)
+    st.session_state['matriz_diferenciales'] = df_base
 
-if df_config is not None and not df_config.empty:
-    try:
-        df_config.columns = [str(c).strip().lower() for c in df_config.columns]
-        df_config['parametro'] = df_config['parametro'].astype(str).str.strip().str.lower()
-        
-        fila_desc = df_config[df_config['parametro'] == 'descuento']
-        fila_tc = df_config[df_config['parametro'] == 'tc']
-        
-        if not fila_desc.empty:
-            desc_base = float(str(fila_desc['valor'].values[0]).replace('%', '').replace(',', '.').strip())
-        if not fila_tc.empty:
-            tc_base = float(str(fila_tc['valor'].values[0]).replace(',', '.').strip())
-    except Exception:
-        pass
+if 'config_global' not in st.session_state:
+    st.session_state['config_global'] = {"descuento": 62.0, "tc": 17.40}
 
-# --- 4. INDEXAR CALENDARIO DE TARIFAS DINÁMICAS ---
-tarifas_por_dia_memoria = {}
-if df_calendario_raw is not None and not df_calendario_raw.empty:
-    try:
-        df_calendario_raw.columns = [str(c).strip() for c in df_calendario_raw.columns]
-        
-        col_fecha = df_calendario_raw.iloc[:, 0].astype(str).str.strip()
-        col_tarifa = df_calendario_raw.iloc[:, 1].astype(str).str.replace(' ', '').str.replace('$', '').str.replace(',', '.').str.strip()
-        
-        fechas_transformadas = pd.to_datetime(col_fecha, errors='coerce', dayfirst=True)
-        fechas_texto = fechas_transformadas.dt.strftime('%Y-%m-%d')
-        
-        precios_limpios = pd.to_numeric(col_tarifa, errors='coerce')
-        
-        for f, p in zip(fechas_texto, precios_limpios):
-            if pd.notna(f) and pd.notna(p):
-                tarifas_por_dia_memoria[f] = float(p)
-                
-        st.sidebar.success(f"📈 {len(tarifas_por_dia_memoria)} días de tarifas indexados.")
-    except Exception as e:
-        st.sidebar.error(f"Error al procesar el archivo: {str(e)}")
-else:
-    st.sidebar.error("⚠️ Aviso: Usando tarifas fijas de respaldo.")
-
-# --- 5. PANEL LATERAL (SIDEBAR) ---
+# --- 3. MENÚ LATERAL: PANEL DE CONTROL DE REVENUE ---
 with st.sidebar:
-    st.header("Configuración")
-    st.metric("Descuento Aplicado", f"{desc_base}%")
+    st.header("🔑 Administración")
+    modo_admin = st.checkbox("Entrar como Revenue Manager")
     
-    tc_actual = st.number_input(
-        "Tipo de Cambio (MXN)",
-        min_value=1.0,
-        value=float(tc_base),
-        step=0.1,
-        format="%.2f"
-    )
-    
-    st.divider()
-    if st.button("🔄 Actualizar Tarifas de Google"):
-        st.cache_data.clear()
-        st.rerun()
+    if modo_admin:
+        clave = st.text_input("Contraseña", type="password")
+        if clave == PASSWORD_ADMIN:
+            st.success("Acceso Autorizado")
+            st.subheader("Configuración Global")
+            
+            # Modificación directa de parámetros globales
+            desc_input = st.number_input("Descuento Base (%)", min_value=0.0, max_value=100.0, value=st.session_state['config_global']['descuento'], step=1.0)
+            tc_input = st.number_input("Tipo de Cambio Oficial", min_value=1.0, value=st.session_state['config_global']['tc'], step=0.1)
+            
+            st.session_state['config_global']['descuento'] = desc_input
+            st.session_state['config_global']['tc'] = tc_input
+            
+            st.divider()
+            st.subheader("Editar Diferenciales ($ USD)")
+            st.caption("Modifica los valores directamente en la tabla de abajo:")
+            
+            # Interfaz interactiva para que el Revenue edite los precios en malla directamente
+            df_editado = st.data_editor(st.session_state['matriz_diferenciales'], use_container_width=True)
+            st.session_state['matriz_diferenciales'] = df_editado
+            
+            if st.button("💾 Guardar y Aplicar Cambios"):
+                st.toast("Tarifas actualizadas en el sistema", icon="✅")
+        elif clave != "":
+            st.error("Contraseña Incorrecta")
+    else:
+        # Vista normal para Recepción en el menú lateral
+        st.metric("Descuento Operativo", f"{st.session_state['config_global']['descuento']}%")
+        st.metric("Tipo de Cambio", f"${st.session_state['config_global']['tc']:.2f} MXN")
 
-# --- 6. INTERFAZ PRINCIPAL ---
-st.title("🏨 Cotizador de upsells - Temporadas Dinámicas")
+# --- 4. INTERFAZ PRINCIPAL PARA RECEPCIÓN ---
+st.title("🏨 Cotizador de Upsells Estacionales")
+st.subheader("Módulo Operativo de Recepción")
 
 col_nom, col_fol = st.columns(2)
 with col_nom: cliente = st.text_input("Nombre del Huésped", value="")
@@ -103,66 +86,65 @@ with col_out: check_out = st.date_input("Check-out", datetime.now().date() + tim
 
 noches = (check_out - check_in).days if check_out and check_in else 1
 
-valores_habitaciones = {
-    "Standard Two Double Beds": 0.0, "Junior Suite": 75.0, "Deluxe Suite": 0.0,
-    "Executive Suite": 150.0, "One Bedroom Suite Garden": 225.0, "One Bedroom Suite": 300.0,
-    "1 Bedroom Suite Plus": 375.0, "1 Bedroom Ocean Front": 475.0, "2 Bedroom Suite": 780.0,
-    "2 Bedroom Ocean Front": 980.0, "Penthouse 1PH": 1125.0,
-    "Penthouse 2PH": 1875.0, "Penthouse 3PH": 2625.0
-}
-
 col_cat1, col_cat2 = st.columns(2)
-with col_cat1: cat_orig = st.selectbox("Categoría Original", list(valores_habitaciones.keys()))
-with col_cat2: cat_dest = st.selectbox("Upgrade a Categoría", list(valores_habitaciones.keys()), index=1)
+with col_cat1: cat_orig = st.selectbox("Categoría Original", CATEGORIAS, index=0)
+with col_cat2: cat_dest = st.selectbox("Upgrade a Categoría", CATEGORIAS, index=1)
 
 st.divider()
 
-# Botón interactivo para procesar la cotización en pantalla
-ejecutar_calculo = st.button("🧮 Calcular Cotización", type="primary")
+ejecutar_calculo = st.button("🧮 Calcular Cotización Justa", type="primary")
 
-# --- 7. LOGICA MATEMÁTICA Y BOTÓN DE DESCARGA ---
+# --- 5. LÓGICA DE CÁLCULO ESTACIONAL MENSUAL ---
 if noches <= 0:
     st.error("La fecha de salida debe ser posterior a la de entrada.")
 else:
-    if ejecutar_calculo or 'p_noche' in st.session_state:
-        total_factor_estancia = 0.0
-        fechas_no_encontradas = 0
+    if ejecutar_calculo or 'p_noche_estacional' in st.session_state:
+        total_diferenciales = 0.0
         
+        # Calculamos la tarifa sumando el valor correspondiente al mes de cada noche
         for n in range(noches):
-            fecha_noche_texto = (check_in + timedelta(days=n)).strftime('%Y-%m-%d')
+            fecha_noche = check_in + timedelta(days=n)
+            # Obtenemos el nombre del mes en español basado en el índice
+            mes_indice = fecha_noche.month - 1
+            nombre_mes = MESES[mes_indice]
             
-            if fecha_noche_texto in tarifas_por_dia_memoria:
-                total_factor_estancia += tarifas_por_dia_memoria[fecha_noche_texto]
-            else:
-                fechas_no_encontradas += 1
+            # Extraemos los precios de la matriz modificada por el Revenue
+            matriz = st.session_state['matriz_diferenciales']
+            tarifa_orig_mes = matriz.loc[nombre_mes, cat_orig]
+            tarifa_dest_mes = matriz.loc[nombre_mes, cat_dest]
+            
+            # El diferencial justo es la resta entre lo que vale la destino y la origen en ese mes específico
+            diferencial_noche = float(tarifa_dest_mes) - float(tarifa_orig_mes)
+            # Si el diferencial da negativo por error de selección, lo dejamos en 0
+            total_diferenciales += max(diferencial_noche, 0.0)
 
-        if fechas_no_encontradas == 0 and total_factor_estancia > 0:
-            factor_promedio_estancia = total_factor_estancia / noches
-            # FÓRMULA CORREGIDA: Tarifa base del Excel filtrada por descuento e impuestos
-            p_noche = factor_promedio_estancia * (1 - desc_base/100) * 1.30
-        else:
-            gap_fijo_base = valores_habitaciones.get(cat_dest, 0.0) - valores_habitaciones.get(cat_orig, 0.0)
-            if df_calendario_raw is not None:
-                st.warning("⚠️ Nota: Algunas fechas no se encontraron en el calendario. Se usó tarifa plana base.")
-            p_noche = (gap_fijo_base * (1 - desc_base/100)) * 1.30
-
-        # Guardar en estado de sesión para mantener los valores si se descarga el PDF
-        st.session_state['p_noche'] = p_noche
+        # Promedio del diferencial estacional por noche
+        gap_promedio_estacional = total_diferenciales / noches
         
-        t_usd = p_noche * noches
+        # Aplicamos el descuento guardado por el Revenue
+        desc_actual = st.session_state['config_global']['descuento']
+        tc_actual = st.session_state['config_global']['tc']
+        
+        # Fórmula final limpia (Diferencial Neto de Categorías del Mes * Descuento)
+        p_noche = gap_promedio_estacional * (1 - desc_actual / 100)
+        
+        # Guardamos en sesión
+        st.session_state['p_noche_estacional'] = p_noche
+        
+        t_usd = p_noche * aches = p_noche * noches
         t_mxn = t_usd * tc_actual
         c_reserva = n_reserva if n_reserva.strip() else "Sin_Numero"
 
-        # Mostrar Resultados Numéricos
+        # Mostrar métricas al recepcionista
         res1, res2, res3, res4 = st.columns(4)
-        res1.metric("Noches", f"{noches}")
-        res2.metric("USD / Noche (Dinámico)", f"${p_noche:,.2f}")
-        res3.metric("Total USD", f"${t_usd:,.2f}")
-        res4.metric("Total MXN", f"${t_mxn:,.2f}")
+        res1.metric("Noches de Estancia", f"{noches}")
+        res2.metric("Tarifa Upgrade / Noche", f"${p_noche:,.2f} USD")
+        res3.metric("Total USD (Neto)", f"${t_usd:,.2f} USD")
+        res4.metric("Total MXN", f"${t_mxn:,.2f} MXN")
 
         st.divider()
 
-        # --- 8. GENERACIÓN SEGURA DE PDF ---
+        # --- 6. GENERACIÓN DE PDF SEGURO ---
         def generar_pdf_bytes():
             pdf = FPDF()
             pdf.add_page()
@@ -170,7 +152,7 @@ else:
             pdf.set_font("Helvetica", 'B', 12)
             pdf.cell(0, 10, "CASA DORADA LOS CABOS", ln=True)
 
-            pdf.ln(30)
+            pdf.ln(25)
             pdf.set_font("Helvetica", 'B', 16)
             pdf.cell(0, 10, "ROOM UPGRADE AGREEMENT", ln=True, align='R')
             pdf.set_font("Helvetica", '', 10)
@@ -251,10 +233,9 @@ else:
 
             return bytes(pdf.output())
 
-        # Botón para descargar el documento definitivo
         st.download_button(
-            label="📥 Descargar PDF de Upgrade", 
+            label="📥 Descargar Contrato de Upgrade PDF", 
             data=generar_pdf_bytes(), 
-            file_name=f"Upsell_{c_reserva}.pdf", 
+            file_name=f"Upgrade_{c_reserva}.pdf", 
             mime="application/pdf"
         )
