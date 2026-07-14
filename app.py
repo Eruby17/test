@@ -18,30 +18,33 @@ CATEGORIAS = [
     "Penthouse 1PH", "Penthouse 2PH", "Penthouse 3PH"
 ]
 
-# Inicializamos la matriz de diferenciales mensuales con los valores del primer programa
+# Definimos las proporciones fijas en base a la Junior Suite ($75.0)
+PROPORCIONES = {
+    "Standard Two Double Beds": 0.0,
+    "Junior Suite": 1.0,  # Habitación Base para cálculos
+    "Deluxe Suite": 0.0,
+    "Executive Suite": 2.0,
+    "One Bedroom Suite Garden": 3.0,
+    "One Bedroom Suite": 4.0,
+    "1 Bedroom Suite Plus": 5.0,
+    "1 Bedroom Ocean Front": 6.3333,
+    "2 Bedroom Suite": 10.40,
+    "2 Bedroom Ocean Front": 13.0667,  # Se mantiene su proporción histórica pero editable
+    "Penthouse 1PH": 15.0,
+    "Penthouse 2PH": 25.0,
+    "Penthouse 3PH": 35.0
+}
+
+# Inicializamos la matriz de diferenciales mensuales
 if 'matriz_diferenciales' not in st.session_state:
-    # Estos son los valores base por noche asignados originalmente a cada habitación
-    valores_por_defecto = {
-        "Standard Two Double Beds": 0.0, 
-        "Junior Suite": 75.0, 
-        "Deluxe Suite": 0.0,
-        "Executive Suite": 150.0, 
-        "One Bedroom Suite Garden": 225.0, 
-        "One Bedroom Suite": 300.0,
-        "1 Bedroom Suite Plus": 375.0, 
-        "1 Bedroom Ocean Front": 475.0, 
-        "2 Bedroom Suite": 780.0,
-        "2 Bedroom Ocean Front": 980.0, 
-        "Penthouse 1PH": 1125.0,
-        "Penthouse 2PH": 1875.0, 
-        "Penthouse 3PH": 2625.0
-    }
+    # Valor inicial de partida para la Junior Suite
+    valor_base_junior = 75.0
     
-    # Rellenamos la matriz mensual usando estos diferenciales fijos de partida
     base_data = {}
     for cat in CATEGORIAS:
-        monto_defecto = valores_por_defecto.get(cat, 0.0)
-        base_data[cat] = [monto_defecto for _ in range(12)]
+        factor = PROPORCIONES.get(cat, 0.0)
+        # Multiplicamos el valor base de Junior por la proporción correspondiente
+        base_data[cat] = [float(round(valor_base_junior * factor, 2)) for _ in range(12)]
         
     df_base = pd.DataFrame(base_data, index=MESES)
     st.session_state['matriz_diferenciales'] = df_base
@@ -68,13 +71,30 @@ with st.sidebar:
             
             st.divider()
             st.subheader("Editar Diferenciales ($ USD)")
-            st.caption("Modifica los valores directamente en la tabla de abajo:")
+            st.info("💡 Consejo: Modifica el valor de la columna **Junior Suite** en cualquier mes. Las demás habitaciones (excepto si las editas a mano) se recalcularán automáticamente en cascada.")
             
-            df_editado = st.data_editor(st.session_state['matriz_diferenciales'], use_container_width=True)
+            # Cargamos la matriz actual
+            matriz_actual = st.session_state['matriz_diferenciales'].copy()
+            
+            # Interfaz interactiva para el Revenue
+            df_editado = st.data_editor(matriz_actual, use_container_width=True)
+            
+            # Detectar cambios para propagar la proporcionalidad automáticamente
+            for mes in MESES:
+                valor_junior_actual = st.session_state['matriz_diferenciales'].loc[mes, "Junior Suite"]
+                valor_junior_nuevo = df_editado.loc[mes, "Junior Suite"]
+                
+                # Si el Revenue cambió el valor base de la Junior Suite para ese mes:
+                if valor_junior_actual != valor_junior_nuevo:
+                    for cat in CATEGORIAS:
+                        # Recalculamos todas las categorías del mes basándonos en la nueva Junior Suite
+                        factor = PROPORCIONES.get(cat, 0.0)
+                        df_editado.loc[mes, cat] = float(round(valor_junior_nuevo * factor, 2))
+            
             st.session_state['matriz_diferenciales'] = df_editado
             
             if st.button("💾 Guardar y Aplicar Cambios"):
-                st.toast("Tarifas actualizadas en el sistema", icon="✅")
+                st.toast("Estructura de tarifas proporcionales actualizada", icon="✅")
         elif clave != "":
             st.error("Contraseña Incorrecta")
     else:
@@ -127,7 +147,6 @@ else:
         desc_actual = st.session_state['config_global']['descuento']
         tc_actual = st.session_state['config_global']['tc']
         
-        # El cálculo dinámico estacional neto
         p_noche = gap_promedio_estacional * (1 - desc_actual / 100)
         
         st.session_state['p_noche_estacional'] = p_noche
