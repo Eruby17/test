@@ -8,11 +8,11 @@ from google.oauth2.service_account import Credentials
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Cotizador de upsells - Casa Dorada", page_icon="🏨", layout="wide")
 
-# --- 2. BASE DE DATOS LOCAL EN MEMORIA (ESTADO DE SESIÓN) ---
+# --- 2. BASE DE DATOS LOCAL Y CONEXIÓN GOOGLE DRIVE ---
 PASSWORD_ADMIN = "Revenue2026"
 MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
-# LISTA ACTUALIZADA: Exactamente igual a las columnas de tu Google Sheets
+# Tus nombres exactos de columnas en Google Sheets
 CATEGORIAS = [
     "Standard Two Double Beds", 
     "Junior Suite", 
@@ -28,10 +28,10 @@ CATEGORIAS = [
     "Three Bedroom Penthouse"
 ]
 
-# Proporciones actualizadas mapeadas con tus nombres de columnas exactos
+# Factores proporcionales en base a la Junior Suite ($75.0)
 PROPORCIONES = {
     "Standard Two Double Beds": 0.0,
-    "Junior Suite": 1.0,  # Habitación Base para cálculos estacionales
+    "Junior Suite": 1.0,
     "Deluxe Suite": 0.0,
     "Executive Suite": 2.0,
     "One Bedroom Suite": 4.0,
@@ -44,7 +44,7 @@ PROPORCIONES = {
     "Three Bedroom Penthouse": 35.0
 }
 
-# Inicializar conexión segura usando los Secrets de Streamlit
+# Inicializar conexión con Google Sheets
 @st.cache_resource(show_spinner=False)
 def obtener_cliente_gspread():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -58,26 +58,25 @@ def cargar_datos_desde_drive():
         url_doc = st.secrets["connections"]["gsheets"]["spreadsheet"]
         doc = gc.open_by_url(url_doc)
         
-        # Leer Pestaña 1: config
+        # Leer pestaña 'config'
         ws_config = doc.worksheet("config")
         datos_config = ws_config.get_all_records()
         df_c = pd.DataFrame(datos_config)
         
-        # Leer Pestaña 2: diferenciales
+        # Leer pestaña 'diferenciales'
         ws_dif = doc.worksheet("diferenciales")
         datos_dif = ws_dif.get_all_records()
         df_d = pd.DataFrame(datos_dif)
         df_d.set_index("mes", inplace=True)
         
         return df_c, df_d, doc
-    except Exception as e:
-        st.error(f"Error de conexión con Google Sheets: {str(e)}")
+    except Exception:
+        st.sidebar.warning("⚠️ Sin conexión con Google Drive. Usando base de datos temporal.")
         return None, None, None
 
-# Descargamos los datos maestros reales del hotel
 df_config_raw, df_diferenciales_raw, doc_sheets = cargar_datos_desde_drive()
 
-# Inicializamos las variables en memoria utilizando los datos cargados de tu Drive
+# Inicializar memoria interna de la aplicación
 if df_diferenciales_raw is not None and 'matriz_diferenciales' not in st.session_state:
     st.session_state['matriz_diferenciales'] = df_diferenciales_raw
 
@@ -92,9 +91,14 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
         "tc": config_dict.get("tc", 17.40)
     }
 
-# Respaldos de seguridad si falla la nube
+# Respaldos internos en caso de fallar Google Sheets al iniciar
 if 'matriz_diferenciales' not in st.session_state:
-    st.session_state['matriz_diferenciales'] = pd.DataFrame(0.0, index=MESES, columns=CATEGORIAS)
+    base_data = {}
+    for cat in CATEGORIAS:
+        factor = PROPORCIONES.get(cat, 0.0)
+        base_data[cat] = [float(round(75.0 * factor, 2)) for _ in range(12)]
+    st.session_state['matriz_diferenciales'] = pd.DataFrame(base_data, index=MESES)
+
 if 'config_global' not in st.session_state:
     st.session_state['config_global'] = {"descuento": 62.0, "tc": 17.40}
 
@@ -116,13 +120,13 @@ with st.sidebar:
             st.session_state['config_global']['tc'] = tc_input
             
             st.divider()
-            st.subheader("Editar Diferenciales ($ USD)")
-            st.info("💡 Modifica el valor de la **Junior Suite** para recalcular automáticamente las demás en cascada.")
+            st.subheader("Editar Tarifas ($ USD)")
+            st.info("💡 Modifica el valor de la **Junior Suite** de cualquier mes para recalcular de forma proporcional las demás.")
             
             matriz_actual = st.session_state['matriz_diferenciales'].copy()
             df_editado = st.data_editor(matriz_actual, use_container_width=True)
             
-            # Algoritmo de recálculo proporcional automático en cascada
+            # Recálculo automático en cascada
             for mes in MESES:
                 valor_junior_actual = st.session_state['matriz_diferenciales'].loc[mes, "Junior Suite"]
                 valor_junior_nuevo = df_editado.loc[mes, "Junior Suite"]
@@ -134,34 +138,30 @@ with st.sidebar:
             
             st.session_state['matriz_diferenciales'] = df_editado
             
-            # Envío de modificaciones a Drive
             if st.button("💾 Guardar y Sincronizar en Drive"):
                 if doc_sheets is not None:
                     try:
                         with st.spinner("Sincronizando con Google Drive..."):
-                            # 1. Guardar Configuración Global en la pestaña 'config'
                             ws_config = doc_sheets.worksheet("config")
                             ws_config.clear()
                             ws_config.append_row(["parametro", "valor"])
                             ws_config.append_row(["descuento", st.session_state['config_global']['descuento']])
                             ws_config.append_row(["tc", st.session_state['config_global']['tc']])
                             
-                            # 2. Guardar Diferenciales en la pestaña 'diferenciales'
                             ws_dif = doc_sheets.worksheet("diferenciales")
                             ws_dif.clear()
                             
-                            # Reconstruimos la tabla con su columna de 'mes' para subirla
                             df_subida = st.session_state['matriz_diferenciales'].reset_index()
                             df_subida.rename(columns={"index": "mes"}, inplace=True)
                             
                             ws_dif.update([df_subida.columns.values.tolist()] + df_subida.values.tolist())
                             
-                            st.success("¡Datos guardados con éxito en Google Drive!")
-                            st.toast("Base de datos en la nube actualizada", icon="☁️")
+                            st.success("¡Datos guardados con éxito!")
+                            st.toast("Base de datos actualizada en la nube", icon="☁️")
                     except Exception as err:
-                        st.error(f"Fallo al escribir en Google Drive: {str(err)}")
+                        st.error(f"Error al escribir en Google Drive: {str(err)}")
                 else:
-                    st.error("No se pudo establecer la conexión de escritura con la base de datos.")
+                    st.error("Sin conexión de escritura con Google Drive.")
         elif clave != "":
             st.error("Contraseña Incorrecta")
     else:
@@ -169,8 +169,7 @@ with st.sidebar:
         st.metric("Tipo de Cambio", f"${st.session_state['config_global']['tc']:.2f} MXN")
 
 # --- 4. INTERFAZ PRINCIPAL PARA RECEPCIÓN ---
-st.title("🏨 Cotizador de Upsells Estacionales")
-st.subheader("Módulo Operativo de Recepción")
+st.title("🏨 Cotizador de Upsells - Casa Dorada")
 
 col_nom, col_fol = st.columns(2)
 with col_nom: cliente = st.text_input("Nombre del Huésped", value="")
@@ -188,9 +187,10 @@ with col_cat2: cat_dest = st.selectbox("Upgrade a Categoría", CATEGORIAS, index
 
 st.divider()
 
-ejecutar_calculo = st.button("🧮 Calcular Cotización Justa", type="primary")
+# Botón simplificado de cálculo directo
+ejecutar_calculo = st.button("🧮 Calcular", type="primary")
 
-# --- 5. LÓGICA DE CÁLCULO ESTACIONAL MENSUAL ---
+# --- 5. LÓGICA DE CÁLCULO ---
 if noches <= 0:
     st.error("La fecha de salida debe ser posterior a la de entrada.")
 else:
@@ -222,14 +222,14 @@ else:
         c_reserva = n_reserva if n_reserva.strip() else "Sin_Numero"
 
         res1, res2, res3, res4 = st.columns(4)
-        res1.metric("Noches de Estancia", f"{noches}")
-        res2.metric("Tarifa Upgrade / Noche", f"${p_noche:,.2f} USD")
-        res3.metric("Total USD (Neto)", f"${t_usd:,.2f} USD")
-        res4.metric("Total MXN", f"${t_mxn:,.2f} MXN")
+        res1.metric("Noches", f"{noches}")
+        res2.metric("USD / Noche", f"${p_noche:,.2f}")
+        res3.metric("Total USD", f"${t_usd:,.2f}")
+        res4.metric("Total MXN", f"${t_mxn:,.2f}")
 
         st.divider()
 
-        # --- 6. GENERACIÓN DE PDF SEGURO ---
+        # --- 6. GENERACIÓN DE PDF ---
         def generar_pdf_bytes():
             pdf = FPDF()
             pdf.add_page()
@@ -318,8 +318,9 @@ else:
 
             return bytes(pdf.output())
 
+        # Botón de descarga directo y sencillo
         st.download_button(
-            label="📥 Descargar Contrato de Upgrade PDF", 
+            label="📥 Descargar PDF", 
             data=generar_pdf_bytes(), 
             file_name=f"Upgrade_{c_reserva}.pdf", 
             mime="application/pdf"
