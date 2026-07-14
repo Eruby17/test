@@ -2,53 +2,99 @@ import streamlit as st
 from fpdf import FPDF
 from datetime import datetime, timedelta
 import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Cotizador de upsells - Casa Dorada", page_icon="🏨", layout="wide")
 
 # --- 2. BASE DE DATOS LOCAL EN MEMORIA (ESTADO DE SESIÓN) ---
 PASSWORD_ADMIN = "Revenue2026"
-
 MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
+# LISTA ACTUALIZADA: Exactamente igual a las columnas de tu Google Sheets
 CATEGORIAS = [
-    "Standard Two Double Beds", "Junior Suite", "Deluxe Suite", "Executive Suite",
-    "One Bedroom Suite Garden", "One Bedroom Suite", "1 Bedroom Suite Plus",
-    "1 Bedroom Ocean Front", "2 Bedroom Suite", "2 Bedroom Ocean Front",
-    "Penthouse 1PH", "Penthouse 2PH", "Penthouse 3PH"
+    "Standard Two Double Beds", 
+    "Junior Suite", 
+    "Deluxe Suite", 
+    "Executive Suite",
+    "One Bedroom Suite", 
+    "One Bedroom Plus", 
+    "One Bedroom Ocean Front", 
+    "Two Bedroom Suite", 
+    "Two Bedroom Ocean Front",
+    "One Bedroom Penthouse", 
+    "Two Bedroom Penthouse", 
+    "Three Bedroom Penthouse"
 ]
 
-# Definimos las proporciones fijas en base a la Junior Suite ($75.0)
+# Proporciones actualizadas mapeadas con tus nombres de columnas exactos
 PROPORCIONES = {
     "Standard Two Double Beds": 0.0,
-    "Junior Suite": 1.0,  # Habitación Base para cálculos
+    "Junior Suite": 1.0,  # Habitación Base para cálculos estacionales
     "Deluxe Suite": 0.0,
     "Executive Suite": 2.0,
-    "One Bedroom Suite Garden": 3.0,
     "One Bedroom Suite": 4.0,
-    "1 Bedroom Suite Plus": 5.0,
-    "1 Bedroom Ocean Front": 6.3333,
-    "2 Bedroom Suite": 10.40,
-    "2 Bedroom Ocean Front": 13.0667,  # Se mantiene su proporción histórica pero editable
-    "Penthouse 1PH": 15.0,
-    "Penthouse 2PH": 25.0,
-    "Penthouse 3PH": 35.0
+    "One Bedroom Plus": 5.0,
+    "One Bedroom Ocean Front": 6.3333,
+    "Two Bedroom Suite": 10.40,
+    "Two Bedroom Ocean Front": 13.0667,
+    "One Bedroom Penthouse": 15.0,
+    "Two Bedroom Penthouse": 25.0,
+    "Three Bedroom Penthouse": 35.0
 }
 
-# Inicializamos la matriz de diferenciales mensuales
-if 'matriz_diferenciales' not in st.session_state:
-    # Valor inicial de partida para la Junior Suite
-    valor_base_junior = 75.0
-    
-    base_data = {}
-    for cat in CATEGORIAS:
-        factor = PROPORCIONES.get(cat, 0.0)
-        # Multiplicamos el valor base de Junior por la proporción correspondiente
-        base_data[cat] = [float(round(valor_base_junior * factor, 2)) for _ in range(12)]
-        
-    df_base = pd.DataFrame(base_data, index=MESES)
-    st.session_state['matriz_diferenciales'] = df_base
+# Inicializar conexión segura usando los Secrets de Streamlit
+@st.cache_resource(show_spinner=False)
+def obtener_cliente_gspread():
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds_info = st.secrets["gcp_service_account"]
+    credentials = Credentials.from_service_account_info(creds_info, scopes=scope)
+    return gspread.authorize(credentials)
 
+def cargar_datos_desde_drive():
+    try:
+        gc = obtener_cliente_gspread()
+        url_doc = st.secrets["connections"]["gsheets"]["spreadsheet"]
+        doc = gc.open_by_url(url_doc)
+        
+        # Leer Pestaña 1: config
+        ws_config = doc.worksheet("config")
+        datos_config = ws_config.get_all_records()
+        df_c = pd.DataFrame(datos_config)
+        
+        # Leer Pestaña 2: diferenciales
+        ws_dif = doc.worksheet("diferenciales")
+        datos_dif = ws_dif.get_all_records()
+        df_d = pd.DataFrame(datos_dif)
+        df_d.set_index("mes", inplace=True)
+        
+        return df_c, df_d, doc
+    except Exception as e:
+        st.error(f"Error de conexión con Google Sheets: {str(e)}")
+        return None, None, None
+
+# Descargamos los datos maestros reales del hotel
+df_config_raw, df_diferenciales_raw, doc_sheets = cargar_datos_desde_drive()
+
+# Inicializamos las variables en memoria utilizando los datos cargados de tu Drive
+if df_diferenciales_raw is not None and 'matriz_diferenciales' not in st.session_state:
+    st.session_state['matriz_diferenciales'] = df_diferenciales_raw
+
+if df_config_raw is not None and 'config_global' not in st.session_state:
+    config_dict = {}
+    for _, fila in df_config_raw.iterrows():
+        param = str(fila['parametro']).strip().lower()
+        val = float(str(fila['valor']).replace('%', '').replace(',', '.').strip())
+        config_dict[param] = val
+    st.session_state['config_global'] = {
+        "descuento": config_dict.get("descuento", 62.0),
+        "tc": config_dict.get("tc", 17.40)
+    }
+
+# Respaldos de seguridad si falla la nube
+if 'matriz_diferenciales' not in st.session_state:
+    st.session_state['matriz_diferenciales'] = pd.DataFrame(0.0, index=MESES, columns=CATEGORIAS)
 if 'config_global' not in st.session_state:
     st.session_state['config_global'] = {"descuento": 62.0, "tc": 17.40}
 
@@ -71,30 +117,51 @@ with st.sidebar:
             
             st.divider()
             st.subheader("Editar Diferenciales ($ USD)")
-            st.info("💡 Consejo: Modifica el valor de la columna **Junior Suite** en cualquier mes. Las demás habitaciones (excepto si las editas a mano) se recalcularán automáticamente en cascada.")
+            st.info("💡 Modifica el valor de la **Junior Suite** para recalcular automáticamente las demás en cascada.")
             
-            # Cargamos la matriz actual
             matriz_actual = st.session_state['matriz_diferenciales'].copy()
-            
-            # Interfaz interactiva para el Revenue
             df_editado = st.data_editor(matriz_actual, use_container_width=True)
             
-            # Detectar cambios para propagar la proporcionalidad automáticamente
+            # Algoritmo de recálculo proporcional automático en cascada
             for mes in MESES:
                 valor_junior_actual = st.session_state['matriz_diferenciales'].loc[mes, "Junior Suite"]
                 valor_junior_nuevo = df_editado.loc[mes, "Junior Suite"]
                 
-                # Si el Revenue cambió el valor base de la Junior Suite para ese mes:
                 if valor_junior_actual != valor_junior_nuevo:
                     for cat in CATEGORIAS:
-                        # Recalculamos todas las categorías del mes basándonos en la nueva Junior Suite
                         factor = PROPORCIONES.get(cat, 0.0)
                         df_editado.loc[mes, cat] = float(round(valor_junior_nuevo * factor, 2))
             
             st.session_state['matriz_diferenciales'] = df_editado
             
-            if st.button("💾 Guardar y Aplicar Cambios"):
-                st.toast("Estructura de tarifas proporcionales actualizada", icon="✅")
+            # Envío de modificaciones a Drive
+            if st.button("💾 Guardar y Sincronizar en Drive"):
+                if doc_sheets is not None:
+                    try:
+                        with st.spinner("Sincronizando con Google Drive..."):
+                            # 1. Guardar Configuración Global en la pestaña 'config'
+                            ws_config = doc_sheets.worksheet("config")
+                            ws_config.clear()
+                            ws_config.append_row(["parametro", "valor"])
+                            ws_config.append_row(["descuento", st.session_state['config_global']['descuento']])
+                            ws_config.append_row(["tc", st.session_state['config_global']['tc']])
+                            
+                            # 2. Guardar Diferenciales en la pestaña 'diferenciales'
+                            ws_dif = doc_sheets.worksheet("diferenciales")
+                            ws_dif.clear()
+                            
+                            # Reconstruimos la tabla con su columna de 'mes' para subirla
+                            df_subida = st.session_state['matriz_diferenciales'].reset_index()
+                            df_subida.rename(columns={"index": "mes"}, inplace=True)
+                            
+                            ws_dif.update([df_subida.columns.values.tolist()] + df_subida.values.tolist())
+                            
+                            st.success("¡Datos guardados con éxito en Google Drive!")
+                            st.toast("Base de datos en la nube actualizada", icon="☁️")
+                    except Exception as err:
+                        st.error(f"Fallo al escribir en Google Drive: {str(err)}")
+                else:
+                    st.error("No se pudo establecer la conexión de escritura con la base de datos.")
         elif clave != "":
             st.error("Contraseña Incorrecta")
     else:
@@ -148,7 +215,6 @@ else:
         tc_actual = st.session_state['config_global']['tc']
         
         p_noche = gap_promedio_estacional * (1 - desc_actual / 100)
-        
         st.session_state['p_noche_estacional'] = p_noche
         
         t_usd = p_noche * noches
