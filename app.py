@@ -18,14 +18,31 @@ CATEGORIAS = [
     "Penthouse 1PH", "Penthouse 2PH", "Penthouse 3PH"
 ]
 
-# Inicializamos la matriz de diferenciales mensuales si no existe
+# Inicializamos la matriz de diferenciales mensuales con los valores del primer programa
 if 'matriz_diferenciales' not in st.session_state:
+    # Estos son los valores base por noche asignados originalmente a cada habitación
+    valores_por_defecto = {
+        "Standard Two Double Beds": 0.0, 
+        "Junior Suite": 75.0, 
+        "Deluxe Suite": 0.0,
+        "Executive Suite": 150.0, 
+        "One Bedroom Suite Garden": 225.0, 
+        "One Bedroom Suite": 300.0,
+        "1 Bedroom Suite Plus": 375.0, 
+        "1 Bedroom Ocean Front": 475.0, 
+        "2 Bedroom Suite": 780.0,
+        "2 Bedroom Ocean Front": 980.0, 
+        "Penthouse 1PH": 1125.0,
+        "Penthouse 2PH": 1875.0, 
+        "Penthouse 3PH": 2625.0
+    }
+    
+    # Rellenamos la matriz mensual usando estos diferenciales fijos de partida
     base_data = {}
     for cat in CATEGORIAS:
-        base_data[cat] = [
-            100 if "Junior" in cat else 200 if "Executive" in cat else 300 if "One Bedroom" in cat else 500 if "2 Bedroom" in cat else 1000 if "Penthouse" in cat else 0 
-            for _ in range(12)
-        ]
+        monto_defecto = valores_por_defecto.get(cat, 0.0)
+        base_data[cat] = [monto_defecto for _ in range(12)]
+        
     df_base = pd.DataFrame(base_data, index=MESES)
     st.session_state['matriz_diferenciales'] = df_base
 
@@ -110,11 +127,11 @@ else:
         desc_actual = st.session_state['config_global']['descuento']
         tc_actual = st.session_state['config_global']['tc']
         
+        # El cálculo dinámico estacional neto
         p_noche = gap_promedio_estacional * (1 - desc_actual / 100)
         
         st.session_state['p_noche_estacional'] = p_noche
         
-        # LÍNEA CORREGIDA DE FORMA SEGURA:
         t_usd = p_noche * noches
         t_mxn = t_usd * tc_actual
         c_reserva = n_reserva if n_reserva.strip() else "Sin_Numero"
