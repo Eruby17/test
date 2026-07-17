@@ -204,7 +204,7 @@ st.divider()
 
 ejecutar_calculo = st.button("🧮 Calcular", type="primary")
 
-# --- 5. LÓGICA DE CÁLCULO CON 30% IMPUESTOS ---
+# --- 5. LÓGICA DE CÁLCULO ENFOQUE PRECIO POR NOCHE + 30% ---
 if noches <= 0:
     st.error("La fecha de salida debe ser posterior a la de entrada.")
 else:
@@ -228,27 +228,26 @@ else:
         desc_actual = st.session_state['config_global']['descuento']
         tc_actual = st.session_state['config_global']['tc']
         
-        # 1. Tarifa Noche Neta (Con Descuento aplicado)
+        # 1. Tarifa por Noche Neta
         p_noche_neto = gap_promedio_estacional * (1 - desc_actual / 100)
         st.session_state['p_noche_estacional'] = p_noche_neto
         
-        # 2. Cálculos de Totales (Neto, Impuestos 30% y Gran Total)
-        total_usd_neto = p_noche_neto * noches
-        impuestos_usd = total_usd_neto * 0.30
-        grand_total_usd = total_usd_neto + impuestos_usd
+        # 2. Tarifa por noche + 30% de Impuestos
+        impuesto_por_noche = p_noche_neto * 0.30
+        p_noche_con_impuestos = p_noche_neto + impuesto_por_noche
         
-        # Conversión a MXN del gran total
-        grand_total_mxn = grand_total_usd * tc_actual
+        # Totales de la estancia completa
+        total_usd_con_impuestos = p_noche_con_impuestos * noches
+        total_mxn_con_impuestos = total_usd_con_impuestos * tc_actual
         c_reserva = n_reserva if n_reserva.strip() else "Sin_Numero"
 
-        # Métricas visuales organizadas para la Recepción
+        # Métricas principales enfocadas al cobro por noche e impuestos incluidos
         res1, res2, res3, res4 = st.columns(4)
         res1.metric("Noches", f"{noches}")
-        res2.metric("USD / Noche (Neto)", f"${p_noche_neto:,.2f}")
-        res3.metric("Total Upgrade (Con Impuestos)", f"${grand_total_usd:,.2f} USD")
-        res4.metric("Total en MXN", f"${grand_total_mxn:,.2f} MXN")
+        res2.metric("USD / Noche (Con Impuestos)", f"${p_noche_con_impuestos:,.2f}")
+        res3.metric("Total Estancia (USD)", f"${total_usd_con_impuestos:,.2f} USD")
+        res4.metric("Total Estancia (MXN)", f"${total_mxn_con_impuestos:,.2f} MXN")
 
-        st.info(f"📋 Desglose de Costos: Subtotal Neto: ${total_usd_neto:,.2f} USD | +30% Impuestos (IVA/ISH/Servicio): ${impuestos_usd:,.2f} USD")
         st.divider()
 
         # --- 6. GENERACIÓN DE PDF ---
@@ -304,26 +303,27 @@ else:
             pdf.cell(130, 12, f"   {cat_dest}".encode('latin-1', 'replace').decode('latin-1'), border='B', new_x="LMARGIN", new_y="NEXT")
             pdf.ln(5)
 
-            # Costos final desglozados con el 30% de Impuestos en el PDF
+            # Desglose enfocado por noche + impuestos en el PDF contractual
             pdf.set_font("Helvetica", '', 11)
-            pdf.cell(120, 8, f"Upgrade Fee per Night ({noches} nights):")
+            pdf.cell(120, 8, "Upgrade Fee per Night (Net):")
             pdf.cell(70, 8, f"USD ${p_noche_neto:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
             
-            pdf.cell(120, 8, "Subtotal Upgrade Fee (Net):")
-            pdf.cell(70, 8, f"USD ${total_usd_neto:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(120, 8, "Taxes & Services per Night (30%):")
+            pdf.cell(70, 8, f"USD ${impuesto_por_noche:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
             
-            pdf.cell(120, 8, "Taxes & Services (30%):")
-            pdf.cell(70, 8, f"USD ${impuestos_usd:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", 'B', 11)
+            pdf.cell(120, 8, f"Total Upgrade Fee per Night (Taxes Inc. x {noches} nights):")
+            pdf.cell(70, 8, f"USD ${p_noche_con_impuestos:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
             
             pdf.set_font("Helvetica", 'B', 12)
-            pdf.cell(120, 10, "Total Upgrade Fee (Taxes Included):", border='T')
+            pdf.cell(120, 10, "GRAND TOTAL UPGRADE FEE:", border='T')
             pdf.set_font("Helvetica", 'B', 14)
-            pdf.cell(70, 10, f"USD ${grand_total_usd:,.2f}", border='T', align='R', new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(70, 10, f"USD ${total_usd_con_impuestos:,.2f}", border='T', align='R', new_x="LMARGIN", new_y="NEXT")
             
             pdf.set_font("Helvetica", 'I', 10)
             pdf.cell(120, 8, f"Exchange Rate / Tipo de Cambio (1 USD = {tc_actual} MXN):")
             pdf.set_font("Helvetica", 'B', 12)
-            pdf.cell(70, 8, f"MXN ${grand_total_mxn:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(70, 8, f"MXN ${total_mxn_con_impuestos:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
             
             pdf.ln(15)
             pdf.set_font("Helvetica", 'I', 9)
