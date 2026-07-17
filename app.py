@@ -12,7 +12,6 @@ st.set_page_config(page_title="Cotizador de upsells - Casa Dorada", page_icon="�
 PASSWORD_ADMIN = "Revenue2026"
 MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
-# Tus nombres exactos de columnas en Google Sheets
 CATEGORIAS = [
     "Standard Two Double Beds", 
     "Junior Suite", 
@@ -28,7 +27,6 @@ CATEGORIAS = [
     "Three Bedroom Penthouse"
 ]
 
-# Factores proporcionales en base a la Junior Suite ($75.0)
 PROPORCIONES = {
     "Standard Two Double Beds": 0.0,
     "Junior Suite": 1.0,
@@ -44,7 +42,6 @@ PROPORCIONES = {
     "Three Bedroom Penthouse": 35.0
 }
 
-# Inicializar conexión con Google Sheets
 @st.cache_resource(show_spinner=False)
 def obtener_cliente_gspread():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -53,19 +50,13 @@ def obtener_cliente_gspread():
     return gspread.authorize(credentials)
 
 def limpiar_valor_moneda(val):
-    """Limpia formatos de texto de Excel a floats limpios de Python"""
     if pd.isna(val) or val == "":
         return 0.0
     val_str = str(val).strip().replace('$', '').replace(' ', '')
-    
-    # Tratamiento inteligente de comas y puntos decimales
     if ',' in val_str and '.' in val_str:
-        # Ejemplo: 1,200.50 -> 1200.50
         val_str = val_str.replace(',', '')
     elif ',' in val_str:
-        # Ejemplo: 60,00 -> 60.00
         val_str = val_str.replace(',', '.')
-        
     try:
         return float(val_str)
     except ValueError:
@@ -77,22 +68,17 @@ def cargar_datos_desde_drive():
         url_doc = st.secrets["connections"]["gsheets"]["spreadsheet"]
         doc = gc.open_by_url(url_doc)
         
-        # 1. Leer pestaña 'config'
         ws_config = doc.worksheet("config")
         datos_config = ws_config.get_all_records()
         df_c = pd.DataFrame(datos_config)
         
-        # 2. Leer pestaña 'diferenciales'
         ws_dif = doc.worksheet("diferenciales")
         datos_dif = ws_dif.get_all_records()
         df_d = pd.DataFrame(datos_dif)
         
-        # Normalizar la columna 'mes' a tipo título (Enero, Febrero...)
         if 'mes' in df_d.columns:
             df_d['mes'] = df_d['mes'].astype(str).str.strip().str.capitalize()
             df_d.set_index("mes", inplace=True)
-            
-            # Limpiar el formato de moneda ($0,00) de todas las columnas de la matriz
             for col in df_d.columns:
                 df_d[col] = df_d[col].apply(limpiar_valor_moneda)
         
@@ -103,7 +89,6 @@ def cargar_datos_desde_drive():
 
 df_config_raw, df_diferenciales_raw, doc_sheets = cargar_datos_desde_drive()
 
-# Inicializar memoria interna de la aplicación con los datos limpios de la nube
 if df_diferenciales_raw is not None and 'matriz_diferenciales' not in st.session_state:
     st.session_state['matriz_diferenciales'] = df_diferenciales_raw
 
@@ -114,7 +99,6 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
         val = limpiar_valor_moneda(fila['valor'])
         config_dict[param] = val
     
-    # Nos aseguramos que el descuento inicial de la nube sea un valor lógico
     desc_inicial = config_dict.get("descuento", 60.0)
     if desc_inicial > 100.0:
         desc_inicial = desc_inicial / 100.0 if desc_inicial <= 10000.0 else 60.0
@@ -124,7 +108,6 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
         "tc": config_dict.get("tc", 17.40)
     }
 
-# Respaldos internos de emergencia si falla Google Sheets
 if 'matriz_diferenciales' not in st.session_state:
     base_data = {}
     for cat in CATEGORIAS:
@@ -146,7 +129,6 @@ with st.sidebar:
             st.success("Acceso Autorizado")
             st.subheader("Configuración Global")
             
-            # CORRECCIÓN AQUÍ: Quitamos max_value drástico para blindar contra caídas de la interfaz
             desc_input = st.number_input("Descuento Base (%)", min_value=0.0, value=float(st.session_state['config_global']['descuento']), step=1.0)
             tc_input = st.number_input("Tipo de Cambio Oficial", min_value=1.0, value=float(st.session_state['config_global']['tc']), step=0.1)
             
@@ -160,7 +142,6 @@ with st.sidebar:
             matriz_actual = st.session_state['matriz_diferenciales'].copy()
             df_editado = st.data_editor(matriz_actual, use_container_width=True)
             
-            # Recálculo automático proporcional
             for mes in MESES:
                 valor_junior_actual = st.session_state['matriz_diferenciales'].loc[mes, "Junior Suite"]
                 valor_junior_nuevo = df_editado.loc[mes, "Junior Suite"]
@@ -176,14 +157,12 @@ with st.sidebar:
                 if doc_sheets is not None:
                     try:
                         with st.spinner("Sincronizando con Google Drive..."):
-                            # 1. Guardar pestaña 'config'
                             ws_config = doc_sheets.worksheet("config")
                             ws_config.clear()
                             ws_config.append_row(["parametro", "valor"])
                             ws_config.append_row(["descuento", st.session_state['config_global']['descuento']])
                             ws_config.append_row(["tc", st.session_state['config_global']['tc']])
                             
-                            # 2. Guardar pestaña 'diferenciales'
                             ws_dif = doc_sheets.worksheet("diferenciales")
                             ws_dif.clear()
                             
@@ -225,7 +204,7 @@ st.divider()
 
 ejecutar_calculo = st.button("🧮 Calcular", type="primary")
 
-# --- 5. LÓGICA DE CÁLCULO ---
+# --- 5. LÓGICA DE CÁLCULO CON 30% IMPUESTOS ---
 if noches <= 0:
     st.error("La fecha de salida debe ser posterior a la de entrada.")
 else:
@@ -249,19 +228,27 @@ else:
         desc_actual = st.session_state['config_global']['descuento']
         tc_actual = st.session_state['config_global']['tc']
         
-        p_noche = gap_promedio_estacional * (1 - desc_actual / 100)
-        st.session_state['p_noche_estacional'] = p_noche
+        # 1. Tarifa Noche Neta (Con Descuento aplicado)
+        p_noche_neto = gap_promedio_estacional * (1 - desc_actual / 100)
+        st.session_state['p_noche_estacional'] = p_noche_neto
         
-        t_usd = p_noche * noches
-        t_mxn = t_usd * tc_actual
+        # 2. Cálculos de Totales (Neto, Impuestos 30% y Gran Total)
+        total_usd_neto = p_noche_neto * noches
+        impuestos_usd = total_usd_neto * 0.30
+        grand_total_usd = total_usd_neto + impuestos_usd
+        
+        # Conversión a MXN del gran total
+        grand_total_mxn = grand_total_usd * tc_actual
         c_reserva = n_reserva if n_reserva.strip() else "Sin_Numero"
 
+        # Métricas visuales organizadas para la Recepción
         res1, res2, res3, res4 = st.columns(4)
         res1.metric("Noches", f"{noches}")
-        res2.metric("USD / Noche", f"${p_noche:,.2f}")
-        res3.metric("Total USD", f"${t_usd:,.2f}")
-        res4.metric("Total MXN", f"${t_mxn:,.2f}")
+        res2.metric("USD / Noche (Neto)", f"${p_noche_neto:,.2f}")
+        res3.metric("Total Upgrade (Con Impuestos)", f"${grand_total_usd:,.2f} USD")
+        res4.metric("Total en MXN", f"${grand_total_mxn:,.2f} MXN")
 
+        st.info(f"📋 Desglose de Costos: Subtotal Neto: ${total_usd_neto:,.2f} USD | +30% Impuestos (IVA/ISH/Servicio): ${impuestos_usd:,.2f} USD")
         st.divider()
 
         # --- 6. GENERACIÓN DE PDF ---
@@ -317,20 +304,26 @@ else:
             pdf.cell(130, 12, f"   {cat_dest}".encode('latin-1', 'replace').decode('latin-1'), border='B', new_x="LMARGIN", new_y="NEXT")
             pdf.ln(5)
 
-            # Costos final
+            # Costos final desglozados con el 30% de Impuestos en el PDF
             pdf.set_font("Helvetica", '', 11)
-            pdf.cell(120, 10, f"Upgrade Fee per Night ({noches} nights):")
-            pdf.cell(70, 10, f"USD ${p_noche:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(120, 8, f"Upgrade Fee per Night ({noches} nights):")
+            pdf.cell(70, 8, f"USD ${p_noche_neto:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
+            
+            pdf.cell(120, 8, "Subtotal Upgrade Fee (Net):")
+            pdf.cell(70, 8, f"USD ${total_usd_neto:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
+            
+            pdf.cell(120, 8, "Taxes & Services (30%):")
+            pdf.cell(70, 8, f"USD ${impuestos_usd:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
             
             pdf.set_font("Helvetica", 'B', 12)
-            pdf.cell(120, 10, "Total Upgrade Fee (Including Taxes):", border='T')
+            pdf.cell(120, 10, "Total Upgrade Fee (Taxes Included):", border='T')
             pdf.set_font("Helvetica", 'B', 14)
-            pdf.cell(70, 10, f"USD ${t_usd:,.2f}", border='T', align='R', new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(70, 10, f"USD ${grand_total_usd:,.2f}", border='T', align='R', new_x="LMARGIN", new_y="NEXT")
             
             pdf.set_font("Helvetica", 'I', 10)
             pdf.cell(120, 8, f"Exchange Rate / Tipo de Cambio (1 USD = {tc_actual} MXN):")
             pdf.set_font("Helvetica", 'B', 12)
-            pdf.cell(70, 8, f"MXN ${t_mxn:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(70, 8, f"MXN ${grand_total_mxn:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
             
             pdf.ln(15)
             pdf.set_font("Helvetica", 'I', 9)
@@ -353,7 +346,6 @@ else:
 
             return bytes(pdf.output())
 
-        # Botón de descarga
         st.download_button(
             label="📥 Descargar PDF", 
             data=generar_pdf_bytes(), 
