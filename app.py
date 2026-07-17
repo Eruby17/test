@@ -140,11 +140,11 @@ with st.sidebar:
                 st.subheader("Reglas de Temporada Alta 🎄")
                 dec_start = st.number_input("Inicio Dic (Día)", min_value=1, value=int(st.session_state['config_global']['inicio_high_dec']))
                 ene_end = st.number_input("Fin Ene (Día)", min_value=1, value=int(st.session_state['config_global']['fin_high_ene']))
-                jr_high_val = st.number_input("Jr Suite Premium ($)", min_value=0.0, value=float(st.session_state['config_global']['junior_suite_high']))
+                jr_high_val = st.number_input("Tarifa Temporada Alta ($)", min_value=0.0, value=float(st.session_state['config_global']['junior_suite_high']))
                 
                 st.divider()
                 st.subheader("Editar Tarifas Estándar ($ USD)")
-                st.info("💡 Edita sin prisas. Las celdas ya no parpadearán.")
+          
                 
                 matriz_actual = st.session_state['matriz_diferenciales'].copy()
                 df_editado = st.data_editor(matriz_actual, use_container_width=True)
