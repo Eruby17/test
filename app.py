@@ -62,7 +62,9 @@ def limpiar_valor_moneda(val):
     except ValueError:
         return 0.0
 
-def cargar_datos_desde_drive():
+# BLINDAJE: Agregamos ttl=900 (15 minutos). Google Sheets solo se lee una vez cada 15 min de forma automática.
+@st.cache_data(ttl=900, show_spinner=False)
+def descargar_datos_puros_drive():
     try:
         gc = obtener_cliente_gspread()
         url_doc = st.secrets["connections"]["gsheets"]["spreadsheet"]
@@ -76,18 +78,23 @@ def cargar_datos_desde_drive():
         datos_dif = ws_dif.get_all_records()
         df_d = pd.DataFrame(datos_dif)
         
-        if 'mes' in df_d.columns:
-            df_d['mes'] = df_d['mes'].astype(str).str.strip().str.capitalize()
-            df_d.set_index("mes", inplace=True)
-            for col in df_d.columns:
-                df_d[col] = df_d[col].apply(limpiar_valor_moneda)
-        
-        return df_c, df_d, doc
+        return df_c, df_d
     except Exception as e:
-        st.sidebar.warning(f"⚠️ Error al sincronizar: {str(e)}")
-        return None, None, None
+        return None, None
 
-df_config_raw, df_diferenciales_raw, doc_sheets = cargar_datos_desde_drive()
+def cargar_y_procesar_datos():
+    df_c, df_d = descargar_datos_puros_drive()
+    
+    if df_d is not None and 'mes' in df_d.columns:
+        df_d = df_d.copy()
+        df_d['mes'] = df_d['mes'].astype(str).str.strip().str.capitalize()
+        df_d.set_index("mes", inplace=True)
+        for col in df_d.columns:
+            df_d[col] = df_d[col].apply(limpiar_valor_moneda)
+            
+    return df_c, df_d
+
+df_config_raw, df_diferenciales_raw = cargar_y_procesar_datos()
 
 if df_diferenciales_raw is not None and 'matriz_diferenciales' not in st.session_state:
     st.session_state['matriz_diferenciales'] = df_diferenciales_raw
@@ -107,7 +114,7 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
         "junior_suite_high": config_dict.get("junior_suite_high", 200.0)
     }
 
-# Respaldos internos
+# Respaldos de emergencia locales
 if 'matriz_diferenciales' not in st.session_state:
     base_data = {}
     for cat in CATEGORIAS:
@@ -140,11 +147,11 @@ with st.sidebar:
                 st.subheader("Reglas de Temporada Alta 🎄")
                 dec_start = st.number_input("Inicio Dic (Día)", min_value=1, value=int(st.session_state['config_global']['inicio_high_dec']))
                 ene_end = st.number_input("Fin Ene (Día)", min_value=1, value=int(st.session_state['config_global']['fin_high_ene']))
-                jr_high_val = st.number_input("Tarifa Temporada Alta ($)", min_value=0.0, value=float(st.session_state['config_global']['junior_suite_high']))
+                jr_high_val = st.number_input("Jr Suite Premium ($)", min_value=0.0, value=float(st.session_state['config_global']['junior_suite_high']))
                 
                 st.divider()
                 st.subheader("Editar Tarifas Estándar ($ USD)")
-          
+                st.info("💡 Edita sin prisas. Las celdas ya no parpadearán.")
                 
                 matriz_actual = st.session_state['matriz_diferenciales'].copy()
                 df_editado = st.data_editor(matriz_actual, use_container_width=True)
@@ -170,31 +177,35 @@ with st.sidebar:
                     "junior_suite_high": jr_high_val
                 }
                 
-                if doc_sheets is not None:
-                    try:
-                        with st.spinner("Sincronizando de forma segura con Google Drive..."):
-                            ws_config = doc_sheets.worksheet("config")
-                            ws_config.clear()
-                            ws_config.append_row(["parametro", "valor"])
-                            ws_config.append_row(["descuento", float(st.session_state['config_global']['descuento'])])
-                            ws_config.append_row(["tc", float(st.session_state['config_global']['tc'])])
-                            ws_config.append_row(["inicio_high_dec", int(st.session_state['config_global']['inicio_high_dec'])])
-                            ws_config.append_row(["fin_high_ene", int(st.session_state['config_global']['fin_high_ene'])])
-                            ws_config.append_row(["junior_suite_high", float(st.session_state['config_global']['junior_suite_high'])])
-                            
-                            ws_dif = doc_sheets.worksheet("diferenciales")
-                            ws_dif.clear()
-                            df_subida = df_editado.reset_index()
-                            df_subida.rename(columns={"index": "mes"}, inplace=True)
-                            ws_dif.update([df_subida.columns.values.tolist()] + df_subida.values.tolist())
-                            
-                            st.success("¡Base de datos sincronizada con éxito!")
-                            st.toast("Base de datos sincronizada", icon="☁️")
-                            st.rerun()
-                    except Exception as err:
-                        st.error(f"Error al escribir en Google Drive: {str(err)}")
-                else:
-                    st.error("Sin conexión de escritura con Google Drive.")
+                try:
+                    with st.spinner("Sincronizando de forma segura con Google Drive..."):
+                        gc = obtener_cliente_gspread()
+                        url_doc = st.secrets["connections"]["gsheets"]["spreadsheet"]
+                        doc_sheets = gc.open_by_url(url_doc)
+                        
+                        ws_config = doc_sheets.worksheet("config")
+                        ws_config.clear()
+                        ws_config.append_row(["parametro", "valor"])
+                        ws_config.append_row(["descuento", float(st.session_state['config_global']['descuento'])])
+                        ws_config.append_row(["tc", float(st.session_state['config_global']['tc'])])
+                        ws_config.append_row(["inicio_high_dec", int(st.session_state['config_global']['inicio_high_dec'])])
+                        ws_config.append_row(["fin_high_ene", int(st.session_state['config_global']['fin_high_ene'])])
+                        ws_config.append_row(["junior_suite_high", float(st.session_state['config_global']['junior_suite_high'])])
+                        
+                        ws_dif = doc_sheets.worksheet("diferenciales")
+                        ws_dif.clear()
+                        df_subida = df_editado.reset_index()
+                        df_subida.rename(columns={"index": "mes"}, inplace=True)
+                        ws_dif.update([df_subida.columns.values.tolist()] + df_subida.values.tolist())
+                        
+                        # TRUCO: Forzamos la limpieza del Caché para que la app se actualice al instante con lo nuevo
+                        st.cache_data.clear()
+                        
+                        st.success("¡Base de datos sincronizada con éxito!")
+                        st.toast("Base de datos sincronizada", icon="☁️")
+                        st.rerun()
+                except Exception as err:
+                    st.error(f"Error al escribir en Google Drive: {str(err)}")
         elif clave != "":
             st.error("Contraseña Incorrecta")
     else:
