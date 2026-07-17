@@ -99,30 +99,11 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
         val = limpiar_valor_moneda(fila['valor'])
         config_dict[param] = val
     
-    # Sanitización de Descuento
-    desc_inicial = config_dict.get("descuento", 60.0)
-    if desc_inicial > 100.0:
-        desc_inicial = desc_inicial / 100.0 if desc_inicial <= 10000.0 else 60.0
-
-    # SOLUCIÓN TIPO DE CAMBIO: Si viene multiplicado por error (ej: 17400 o 1740), lo regresamos a rango lógico (17.40)
-    tc_inicial = config_dict.get("tc", 17.40)
-    if tc_inicial > 50.0:
-        while tc_inicial > 50.0:
-            tc_inicial = tc_inicial / 10.0
-
-    dec_start_val = int(config_dict.get("inicio_high_dec", 15))
-    if dec_start_val > 31:
-        dec_start_val = int(dec_start_val / 100) if dec_start_val <= 3100 else 15
-
-    ene_end_val = int(config_dict.get("fin_high_ene", 4))
-    if ene_end_val > 31:
-        ene_end_val = int(ene_end_val / 100) if ene_end_val <= 3100 else 4
-
     st.session_state['config_global'] = {
-        "descuento": desc_inicial,
-        "tc": tc_inicial,
-        "inicio_high_dec": dec_start_val,
-        "fin_high_ene": ene_end_val,
+        "descuento": config_dict.get("descuento", 60.0),
+        "tc": config_dict.get("tc", 17.40),
+        "inicio_high_dec": int(config_dict.get("inicio_high_dec", 15)),
+        "fin_high_ene": int(config_dict.get("fin_high_ene", 4)),
         "junior_suite_high": config_dict.get("junior_suite_high", 200.0)
     }
 
@@ -149,57 +130,49 @@ with st.sidebar:
         clave = st.text_input("Contraseña", type="password")
         if clave == PASSWORD_ADMIN:
             st.success("Acceso Autorizado")
-            st.subheader("Configuración Global")
             
-            desc_input = st.number_input("Descuento Base (%)", min_value=0.0, value=float(st.session_state['config_global']['descuento']), step=1.0)
-            
-            # Control extra para el input del Tipo de Cambio
-            tc_input = st.number_input("Tipo de Cambio Oficial", min_value=1.0, value=float(st.session_state['config_global']['tc']), step=0.1)
-            if tc_input > 50.0:
-                while tc_input > 50.0:
-                    tc_input = tc_input / 10.0
-            
-            st.divider()
-            st.subheader("Reglas de Temporada Alta 🎄")
-            dec_start = st.number_input("Inicio Dic (Día)", min_value=1, value=int(st.session_state['config_global']['inicio_high_dec']))
-            ene_end = st.number_input("Fin Ene (Día)", min_value=1, value=int(st.session_state['config_global']['fin_high_ene']))
-            jr_high_val = st.number_input("Jr Suite Premium ($)", min_value=0.0, value=float(st.session_state['config_global']['junior_suite_high']))
-            
-            st.session_state['config_global']['descuento'] = desc_input
-            st.session_state['config_global']['tc'] = tc_input
-            st.session_state['config_global']['inicio_high_dec'] = min(int(dec_start), 31)
-            st.session_state['config_global']['fin_high_ene'] = min(int(ene_end), 31)
-            st.session_state['config_global']['junior_suite_high'] = jr_high_val
-            
-            st.divider()
-            st.subheader("Editar Tarifas Estándar ($ USD)")
-            
-            # SOLUCIÓN AL GUARDADO: Conectamos la tabla con una llave de estado continuo 'editor_tarifas'
-            matriz_actual = st.session_state['matriz_diferenciales'].copy()
-            df_editado = st.data_editor(matriz_actual, use_container_width=True, key="editor_tarifas")
-            
-            # Procesar el recálculo proporcional inmediato en cascada
-            for mes in MESES:
-                valor_junior_actual = st.session_state['matriz_diferenciales'].loc[mes, "Junior Suite"]
-                valor_junior_nuevo = df_editado.loc[mes, "Junior Suite"]
+            with st.form("formulario_revenue"):
+                st.subheader("Configuración Global")
+                desc_input = st.number_input("Descuento Base (%)", min_value=0.0, value=float(st.session_state['config_global']['descuento']), step=1.0)
+                tc_input = st.number_input("Tipo de Cambio Oficial", min_value=1.0, value=float(st.session_state['config_global']['tc']), step=0.1)
                 
-                if valor_junior_actual != valor_junior_nuevo:
-                    for cat in CATEGORIAS:
-                        factor = PROPORCIONES.get(cat, 0.0)
-                        df_editado.loc[mes, cat] = float(round(valor_junior_nuevo * factor, 2))
-            
-            st.session_state['matriz_diferenciales'] = df_editado
-            
-            if st.button("💾 Guardar y Sincronizar en Drive"):
+                st.divider()
+                st.subheader("Reglas de Temporada Alta 🎄")
+                dec_start = st.number_input("Inicio Dic (Día)", min_value=1, value=int(st.session_state['config_global']['inicio_high_dec']))
+                ene_end = st.number_input("Fin Ene (Día)", min_value=1, value=int(st.session_state['config_global']['fin_high_ene']))
+                jr_high_val = st.number_input("Jr Suite Premium ($)", min_value=0.0, value=float(st.session_state['config_global']['junior_suite_high']))
+                
+                st.divider()
+                st.subheader("Editar Tarifas Estándar ($ USD)")
+                st.info("💡 Edita sin prisas. Las celdas ya no parpadearán.")
+                
+                matriz_actual = st.session_state['matriz_diferenciales'].copy()
+                df_editado = st.data_editor(matriz_actual, use_container_width=True)
+                
+                boton_guardar = st.form_submit_button("💾 Guardar y Sincronizar Cambios", type="primary")
+                
+            if boton_guardar:
+                for mes in MESES:
+                    valor_junior_actual = st.session_state['matriz_diferenciales'].loc[mes, "Junior Suite"]
+                    valor_junior_nuevo = df_editado.loc[mes, "Junior Suite"]
+                    
+                    if valor_junior_actual != valor_junior_nuevo:
+                        for cat in CATEGORIAS:
+                            factor = PROPORCIONES.get(cat, 0.0)
+                            df_editado.loc[mes, cat] = float(round(valor_junior_nuevo * factor, 2))
+                
+                st.session_state['matriz_diferenciales'] = df_editado
+                st.session_state['config_global'] = {
+                    "descuento": desc_input,
+                    "tc": tc_input,
+                    "inicio_high_dec": min(int(dec_start), 31),
+                    "fin_high_ene": min(int(ene_end), 31),
+                    "junior_suite_high": jr_high_val
+                }
+                
                 if doc_sheets is not None:
                     try:
-                        with st.spinner("Sincronizando con Google Drive..."):
-                            # Forzar la recolección de lo último que esté en el editor de datos
-                            if "editor_tarifas" in st.session_state and "edited_rows" in st.session_state["editor_tarifas"]:
-                                df_guardar = st.session_state['matriz_diferenciales']
-                            else:
-                                df_guardar = df_editado
-
+                        with st.spinner("Sincronizando de forma segura con Google Drive..."):
                             ws_config = doc_sheets.worksheet("config")
                             ws_config.clear()
                             ws_config.append_row(["parametro", "valor"])
@@ -211,12 +184,13 @@ with st.sidebar:
                             
                             ws_dif = doc_sheets.worksheet("diferenciales")
                             ws_dif.clear()
-                            df_subida = df_guardar.reset_index()
+                            df_subida = df_editado.reset_index()
                             df_subida.rename(columns={"index": "mes"}, inplace=True)
                             ws_dif.update([df_subida.columns.values.tolist()] + df_subida.values.tolist())
                             
-                            st.success("¡Datos guardados con éxito al primer intento!")
+                            st.success("¡Base de datos sincronizada con éxito!")
                             st.toast("Base de datos sincronizada", icon="☁️")
+                            st.rerun()
                     except Exception as err:
                         st.error(f"Error al escribir en Google Drive: {str(err)}")
                 else:
