@@ -104,7 +104,12 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
     if desc_inicial > 100.0:
         desc_inicial = desc_inicial / 100.0 if desc_inicial <= 10000.0 else 60.0
 
-    # Sanitización inteligente de Días Calendario para evitar desbordamientos (ej: 15,00 -> 15)
+    # SOLUCIÓN TIPO DE CAMBIO: Si viene multiplicado por error (ej: 17400 o 1740), lo regresamos a rango lógico (17.40)
+    tc_inicial = config_dict.get("tc", 17.40)
+    if tc_inicial > 50.0:
+        while tc_inicial > 50.0:
+            tc_inicial = tc_inicial / 10.0
+
     dec_start_val = int(config_dict.get("inicio_high_dec", 15))
     if dec_start_val > 31:
         dec_start_val = int(dec_start_val / 100) if dec_start_val <= 3100 else 15
@@ -115,13 +120,13 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
 
     st.session_state['config_global'] = {
         "descuento": desc_inicial,
-        "tc": config_dict.get("tc", 17.40),
+        "tc": tc_inicial,
         "inicio_high_dec": dec_start_val,
         "fin_high_ene": ene_end_val,
         "junior_suite_high": config_dict.get("junior_suite_high", 200.0)
     }
 
-# Respaldos internos en caso de falla de red
+# Respaldos internos
 if 'matriz_diferenciales' not in st.session_state:
     base_data = {}
     for cat in CATEGORIAS:
@@ -147,16 +152,19 @@ with st.sidebar:
             st.subheader("Configuración Global")
             
             desc_input = st.number_input("Descuento Base (%)", min_value=0.0, value=float(st.session_state['config_global']['descuento']), step=1.0)
+            
+            # Control extra para el input del Tipo de Cambio
             tc_input = st.number_input("Tipo de Cambio Oficial", min_value=1.0, value=float(st.session_state['config_global']['tc']), step=0.1)
+            if tc_input > 50.0:
+                while tc_input > 50.0:
+                    tc_input = tc_input / 10.0
             
             st.divider()
             st.subheader("Reglas de Temporada Alta 🎄")
-            # CORRECCIÓN: Quitamos max_value drásticos para blindar la interfaz contra caídas de Streamlit
             dec_start = st.number_input("Inicio Dic (Día)", min_value=1, value=int(st.session_state['config_global']['inicio_high_dec']))
             ene_end = st.number_input("Fin Ene (Día)", min_value=1, value=int(st.session_state['config_global']['fin_high_ene']))
             jr_high_val = st.number_input("Jr Suite Premium ($)", min_value=0.0, value=float(st.session_state['config_global']['junior_suite_high']))
             
-            # Forzamos límites internos lógicos post-captura para evitar fallas lógicas
             st.session_state['config_global']['descuento'] = desc_input
             st.session_state['config_global']['tc'] = tc_input
             st.session_state['config_global']['inicio_high_dec'] = min(int(dec_start), 31)
@@ -166,9 +174,11 @@ with st.sidebar:
             st.divider()
             st.subheader("Editar Tarifas Estándar ($ USD)")
             
+            # SOLUCIÓN AL GUARDADO: Conectamos la tabla con una llave de estado continuo 'editor_tarifas'
             matriz_actual = st.session_state['matriz_diferenciales'].copy()
-            df_editado = st.data_editor(matriz_actual, use_container_width=True)
+            df_editado = st.data_editor(matriz_actual, use_container_width=True, key="editor_tarifas")
             
+            # Procesar el recálculo proporcional inmediato en cascada
             for mes in MESES:
                 valor_junior_actual = st.session_state['matriz_diferenciales'].loc[mes, "Junior Suite"]
                 valor_junior_nuevo = df_editado.loc[mes, "Junior Suite"]
@@ -184,23 +194,29 @@ with st.sidebar:
                 if doc_sheets is not None:
                     try:
                         with st.spinner("Sincronizando con Google Drive..."):
+                            # Forzar la recolección de lo último que esté en el editor de datos
+                            if "editor_tarifas" in st.session_state and "edited_rows" in st.session_state["editor_tarifas"]:
+                                df_guardar = st.session_state['matriz_diferenciales']
+                            else:
+                                df_guardar = df_editado
+
                             ws_config = doc_sheets.worksheet("config")
                             ws_config.clear()
                             ws_config.append_row(["parametro", "valor"])
-                            ws_config.append_row(["descuento", st.session_state['config_global']['descuento']])
-                            ws_config.append_row(["tc", st.session_state['config_global']['tc']])
-                            ws_config.append_row(["inicio_high_dec", st.session_state['config_global']['inicio_high_dec']])
-                            ws_config.append_row(["fin_high_ene", st.session_state['config_global']['fin_high_ene']])
-                            ws_config.append_row(["junior_suite_high", st.session_state['config_global']['junior_suite_high']])
+                            ws_config.append_row(["descuento", float(st.session_state['config_global']['descuento'])])
+                            ws_config.append_row(["tc", float(st.session_state['config_global']['tc'])])
+                            ws_config.append_row(["inicio_high_dec", int(st.session_state['config_global']['inicio_high_dec'])])
+                            ws_config.append_row(["fin_high_ene", int(st.session_state['config_global']['fin_high_ene'])])
+                            ws_config.append_row(["junior_suite_high", float(st.session_state['config_global']['junior_suite_high'])])
                             
                             ws_dif = doc_sheets.worksheet("diferenciales")
                             ws_dif.clear()
-                            df_subida = st.session_state['matriz_diferenciales'].reset_index()
+                            df_subida = df_guardar.reset_index()
                             df_subida.rename(columns={"index": "mes"}, inplace=True)
                             ws_dif.update([df_subida.columns.values.tolist()] + df_subida.values.tolist())
                             
-                            st.success("¡Datos guardados con éxito!")
-                            st.toast("Base de datos actualizada", icon="☁️")
+                            st.success("¡Datos guardados con éxito al primer intento!")
+                            st.toast("Base de datos sincronizada", icon="☁️")
                     except Exception as err:
                         st.error(f"Error al escribir en Google Drive: {str(err)}")
                 else:
