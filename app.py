@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
+import traceback
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Cotizador de upsells - Casa Dorada", page_icon="🏨", layout="wide")
@@ -12,7 +13,6 @@ st.set_page_config(page_title="Cotizador de upsells - Casa Dorada", page_icon="�
 PASSWORD_ADMIN = "Revenue2026"
 MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
-# Tus nombres exactos de columnas en Google Sheets
 CATEGORIAS = [
     "Standard Two Double Beds", 
     "Junior Suite", 
@@ -28,7 +28,6 @@ CATEGORIAS = [
     "Three Bedroom Penthouse"
 ]
 
-# Factores proporcionales en base a la Junior Suite ($75.0)
 PROPORCIONES = {
     "Standard Two Double Beds": 0.0,
     "Junior Suite": 1.0,
@@ -57,11 +56,9 @@ def limpiar_valor_moneda(val):
     if pd.isna(val) or val == "":
         return 0.0
     val_str = str(val).strip().replace('$', '').replace(' ', '')
-    # Si tiene comas como separador decimal (ej: 60,00 o 17,40)
     if ',' in val_str and '.' not in val_str:
         val_str = val_str.replace(',', '.')
     elif ',' in val_str and '.' in val_str:
-        # Si tiene comas de miles y punto decimal (ej: 1,200.50)
         val_str = val_str.replace(',', '')
     try:
         return float(val_str)
@@ -89,18 +86,23 @@ def cargar_datos_desde_drive():
             df_d['mes'] = df_d['mes'].astype(str).str.strip().str.capitalize()
             df_d.set_index("mes", inplace=True)
             
-            # Limpiar el formato de moneda ($0,00) de todas las columnas de la matriz
+            # Limpiar el formato de moneda de la matriz
             for col in df_d.columns:
                 df_d[col] = df_d[col].apply(limpiar_valor_moneda)
         
         return df_c, df_d, doc
     except Exception as e:
-        st.sidebar.warning(f"⚠️ Sin conexión con Google Drive: {str(e)}")
+        # Se muestra el diagnóstico detallado en la barra lateral
+        st.sidebar.error("❌ Error de conexión con Google Drive")
+        st.sidebar.markdown(f"**Tipo de error:** `{type(e).__name__}`")
+        st.sidebar.markdown(f"**Detalle:** {str(e)}")
+        with st.sidebar.expander("Ver Traza Completa (Traceback)"):
+            st.code(traceback.format_exc(), language="python")
         return None, None, None
 
 df_config_raw, df_diferenciales_raw, doc_sheets = cargar_datos_desde_drive()
 
-# Inicializar memoria interna de la aplicación con los datos limpios de la nube
+# Inicializar memoria interna con datos de la nube
 if df_diferenciales_raw is not None and 'matriz_diferenciales' not in st.session_state:
     st.session_state['matriz_diferenciales'] = df_diferenciales_raw
 
@@ -115,7 +117,7 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
         "tc": config_dict.get("tc", 17.40)
     }
 
-# Respaldos internos de emergencia si falla Google Sheets
+# Respaldos de emergencia en caso de fallar Google Sheets
 if 'matriz_diferenciales' not in st.session_state:
     base_data = {}
     for cat in CATEGORIAS:
@@ -183,11 +185,11 @@ with st.sidebar:
                             ws_dif.update([df_subida.columns.values.tolist()] + df_subida.values.tolist())
                             
                             st.success("¡Datos guardados con éxito!")
-                            st.toast("Base de datos actualizada", icon="☁️")
+                            st.toast("Base de datos actualizada en la nube", icon="☁️")
                     except Exception as err:
                         st.error(f"Error al escribir en Google Drive: {str(err)}")
                 else:
-                    st.error("Sin conexión de escritura con Google Drive.")
+                    st.error("Sin conexión de escritura con Google Drive. Revisa los errores del diagnóstico.")
         elif clave != "":
             st.error("Contraseña Incorrecta")
     else:
