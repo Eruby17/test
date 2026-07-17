@@ -99,19 +99,29 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
         val = limpiar_valor_moneda(fila['valor'])
         config_dict[param] = val
     
+    # Sanitización de Descuento
     desc_inicial = config_dict.get("descuento", 60.0)
     if desc_inicial > 100.0:
         desc_inicial = desc_inicial / 100.0 if desc_inicial <= 10000.0 else 60.0
 
+    # Sanitización inteligente de Días Calendario para evitar desbordamientos (ej: 15,00 -> 15)
+    dec_start_val = int(config_dict.get("inicio_high_dec", 15))
+    if dec_start_val > 31:
+        dec_start_val = int(dec_start_val / 100) if dec_start_val <= 3100 else 15
+
+    ene_end_val = int(config_dict.get("fin_high_ene", 4))
+    if ene_end_val > 31:
+        ene_end_val = int(ene_end_val / 100) if ene_end_val <= 3100 else 4
+
     st.session_state['config_global'] = {
         "descuento": desc_inicial,
         "tc": config_dict.get("tc", 17.40),
-        "inicio_high_dec": int(config_dict.get("inicio_high_dec", 15)),
-        "fin_high_ene": int(config_dict.get("fin_high_ene", 4)),
+        "inicio_high_dec": dec_start_val,
+        "fin_high_ene": ene_end_val,
         "junior_suite_high": config_dict.get("junior_suite_high", 200.0)
     }
 
-# Respaldos internos por si falla la red
+# Respaldos internos en caso de falla de red
 if 'matriz_diferenciales' not in st.session_state:
     base_data = {}
     for cat in CATEGORIAS:
@@ -141,14 +151,16 @@ with st.sidebar:
             
             st.divider()
             st.subheader("Reglas de Temporada Alta 🎄")
-            dec_start = st.number_input("Inicio Dic (Día)", min_value=1, max_value=31, value=st.session_state['config_global']['inicio_high_dec'])
-            ene_end = st.number_input("Fin Ene (Día)", min_value=1, max_value=31, value=st.session_state['config_global']['fin_high_ene'])
+            # CORRECCIÓN: Quitamos max_value drásticos para blindar la interfaz contra caídas de Streamlit
+            dec_start = st.number_input("Inicio Dic (Día)", min_value=1, value=int(st.session_state['config_global']['inicio_high_dec']))
+            ene_end = st.number_input("Fin Ene (Día)", min_value=1, value=int(st.session_state['config_global']['fin_high_ene']))
             jr_high_val = st.number_input("Jr Suite Premium ($)", min_value=0.0, value=float(st.session_state['config_global']['junior_suite_high']))
             
+            # Forzamos límites internos lógicos post-captura para evitar fallas lógicas
             st.session_state['config_global']['descuento'] = desc_input
             st.session_state['config_global']['tc'] = tc_input
-            st.session_state['config_global']['inicio_high_dec'] = int(dec_start)
-            st.session_state['config_global']['fin_high_ene'] = int(ene_end)
+            st.session_state['config_global']['inicio_high_dec'] = min(int(dec_start), 31)
+            st.session_state['config_global']['fin_high_ene'] = min(int(ene_end), 31)
             st.session_state['config_global']['junior_suite_high'] = jr_high_val
             
             st.divider()
@@ -227,7 +239,6 @@ else:
     if ejecutar_calculo or 'p_noche_estacional' in st.session_state:
         total_diferenciales = 0.0
         
-        # Parámetros cargados dinámicamente desde config
         cfg = st.session_state['config_global']
         day_start_dec = cfg.get("inicio_high_dec", 15)
         day_end_ene = cfg.get("fin_high_ene", 4)
@@ -246,13 +257,11 @@ else:
                 es_temporada_alta = True
                 
             if es_temporada_alta:
-                # Si es temporada alta navideña, calculamos la matriz en memoria usando la tarifa premium
                 factor_orig = PROPORCIONES.get(cat_orig, 0.0)
                 factor_dest = PROPORCIONES.get(cat_dest, 0.0)
                 tarifa_orig_mes = float(round(jr_premium_base * factor_orig, 2))
                 tarifa_dest_mes = float(round(jr_premium_base * factor_dest, 2))
             else:
-                # Si es periodo normal, lee directamente los datos estacionales de tu tabla Excel
                 matriz = st.session_state['matriz_diferenciales']
                 tarifa_orig_mes = matriz.loc[nombre_mes, cat_orig]
                 tarifa_dest_mes = matriz.loc[nombre_mes, cat_dest]
