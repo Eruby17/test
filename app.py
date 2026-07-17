@@ -105,9 +105,13 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
 
     st.session_state['config_global'] = {
         "descuento": desc_inicial,
-        "tc": config_dict.get("tc", 17.40)
+        "tc": config_dict.get("tc", 17.40),
+        "inicio_high_dec": int(config_dict.get("inicio_high_dec", 15)),
+        "fin_high_ene": int(config_dict.get("fin_high_ene", 4)),
+        "junior_suite_high": config_dict.get("junior_suite_high", 200.0)
     }
 
+# Respaldos internos por si falla la red
 if 'matriz_diferenciales' not in st.session_state:
     base_data = {}
     for cat in CATEGORIAS:
@@ -116,7 +120,10 @@ if 'matriz_diferenciales' not in st.session_state:
     st.session_state['matriz_diferenciales'] = pd.DataFrame(base_data, index=MESES)
 
 if 'config_global' not in st.session_state:
-    st.session_state['config_global'] = {"descuento": 60.0, "tc": 17.40}
+    st.session_state['config_global'] = {
+        "descuento": 60.0, "tc": 17.40, 
+        "inicio_high_dec": 15, "fin_high_ene": 4, "junior_suite_high": 200.0
+    }
 
 # --- 3. MENÚ LATERAL: PANEL DE CONTROL DE REVENUE ---
 with st.sidebar:
@@ -132,12 +139,20 @@ with st.sidebar:
             desc_input = st.number_input("Descuento Base (%)", min_value=0.0, value=float(st.session_state['config_global']['descuento']), step=1.0)
             tc_input = st.number_input("Tipo de Cambio Oficial", min_value=1.0, value=float(st.session_state['config_global']['tc']), step=0.1)
             
+            st.divider()
+            st.subheader("Reglas de Temporada Alta 🎄")
+            dec_start = st.number_input("Inicio Dic (Día)", min_value=1, max_value=31, value=st.session_state['config_global']['inicio_high_dec'])
+            ene_end = st.number_input("Fin Ene (Día)", min_value=1, max_value=31, value=st.session_state['config_global']['fin_high_ene'])
+            jr_high_val = st.number_input("Jr Suite Premium ($)", min_value=0.0, value=float(st.session_state['config_global']['junior_suite_high']))
+            
             st.session_state['config_global']['descuento'] = desc_input
             st.session_state['config_global']['tc'] = tc_input
+            st.session_state['config_global']['inicio_high_dec'] = int(dec_start)
+            st.session_state['config_global']['fin_high_ene'] = int(ene_end)
+            st.session_state['config_global']['junior_suite_high'] = jr_high_val
             
             st.divider()
-            st.subheader("Editar Tarifas ($ USD)")
-            st.info("💡 Modifica la **Junior Suite** de cualquier mes para recalcular proporcionalmente las demás.")
+            st.subheader("Editar Tarifas Estándar ($ USD)")
             
             matriz_actual = st.session_state['matriz_diferenciales'].copy()
             df_editado = st.data_editor(matriz_actual, use_container_width=True)
@@ -162,13 +177,14 @@ with st.sidebar:
                             ws_config.append_row(["parametro", "valor"])
                             ws_config.append_row(["descuento", st.session_state['config_global']['descuento']])
                             ws_config.append_row(["tc", st.session_state['config_global']['tc']])
+                            ws_config.append_row(["inicio_high_dec", st.session_state['config_global']['inicio_high_dec']])
+                            ws_config.append_row(["fin_high_ene", st.session_state['config_global']['fin_high_ene']])
+                            ws_config.append_row(["junior_suite_high", st.session_state['config_global']['junior_suite_high']])
                             
                             ws_dif = doc_sheets.worksheet("diferenciales")
                             ws_dif.clear()
-                            
                             df_subida = st.session_state['matriz_diferenciales'].reset_index()
                             df_subida.rename(columns={"index": "mes"}, inplace=True)
-                            
                             ws_dif.update([df_subida.columns.values.tolist()] + df_subida.values.tolist())
                             
                             st.success("¡Datos guardados con éxito!")
@@ -204,44 +220,60 @@ st.divider()
 
 ejecutar_calculo = st.button("🧮 Calcular", type="primary")
 
-# --- 5. LÓGICA DE CÁLCULO ENFOQUE PRECIO POR NOCHE + 30% ---
+# --- 5. LÓGICA DE CÁLCULO INTELIGENTE CON EXCEPCIONES ---
 if noches <= 0:
     st.error("La fecha de salida debe ser posterior a la de entrada.")
 else:
     if ejecutar_calculo or 'p_noche_estacional' in st.session_state:
         total_diferenciales = 0.0
         
+        # Parámetros cargados dinámicamente desde config
+        cfg = st.session_state['config_global']
+        day_start_dec = cfg.get("inicio_high_dec", 15)
+        day_end_ene = cfg.get("fin_high_ene", 4)
+        jr_premium_base = cfg.get("junior_suite_high", 200.0)
+        
         for n in range(noches):
             fecha_noche = check_in + timedelta(days=n)
-            mes_indice = fecha_noche.month - 1
-            nombre_mes = MESES[mes_indice]
+            num_mes = fecha_noche.month
+            dia_mes = fecha_noche.day
+            nombre_mes = MESES[num_mes - 1]
             
-            matriz = st.session_state['matriz_diferenciales']
-            tarifa_orig_mes = matriz.loc[nombre_mes, cat_orig]
-            tarifa_dest_mes = matriz.loc[nombre_mes, cat_dest]
+            es_temporada_alta = False
+            if num_mes == 12 and dia_mes >= day_start_dec:
+                es_temporada_alta = True
+            elif num_mes == 1 and dia_mes <= day_end_ene:
+                es_temporada_alta = True
+                
+            if es_temporada_alta:
+                # Si es temporada alta navideña, calculamos la matriz en memoria usando la tarifa premium
+                factor_orig = PROPORCIONES.get(cat_orig, 0.0)
+                factor_dest = PROPORCIONES.get(cat_dest, 0.0)
+                tarifa_orig_mes = float(round(jr_premium_base * factor_orig, 2))
+                tarifa_dest_mes = float(round(jr_premium_base * factor_dest, 2))
+            else:
+                # Si es periodo normal, lee directamente los datos estacionales de tu tabla Excel
+                matriz = st.session_state['matriz_diferenciales']
+                tarifa_orig_mes = matriz.loc[nombre_mes, cat_orig]
+                tarifa_dest_mes = matriz.loc[nombre_mes, cat_dest]
             
             diferencial_noche = float(tarifa_dest_mes) - float(tarifa_orig_mes)
             total_diferenciales += max(diferencial_noche, 0.0)
 
         gap_promedio_estacional = total_diferenciales / noches
+        desc_actual = cfg['descuento']
+        tc_actual = cfg['tc']
         
-        desc_actual = st.session_state['config_global']['descuento']
-        tc_actual = st.session_state['config_global']['tc']
-        
-        # 1. Tarifa por Noche Neta
         p_noche_neto = gap_promedio_estacional * (1 - desc_actual / 100)
         st.session_state['p_noche_estacional'] = p_noche_neto
         
-        # 2. Tarifa por noche + 30% de Impuestos
         impuesto_por_noche = p_noche_neto * 0.30
         p_noche_con_impuestos = p_noche_neto + impuesto_por_noche
         
-        # Totales de la estancia completa
         total_usd_con_impuestos = p_noche_con_impuestos * noches
         total_mxn_con_impuestos = total_usd_con_impuestos * tc_actual
         c_reserva = n_reserva if n_reserva.strip() else "Sin_Numero"
 
-        # Métricas principales enfocadas al cobro por noche e impuestos incluidos
         res1, res2, res3, res4 = st.columns(4)
         res1.metric("Noches", f"{noches}")
         res2.metric("USD / Noche (Con Impuestos)", f"${p_noche_con_impuestos:,.2f}")
@@ -303,7 +335,7 @@ else:
             pdf.cell(130, 12, f"   {cat_dest}".encode('latin-1', 'replace').decode('latin-1'), border='B', new_x="LMARGIN", new_y="NEXT")
             pdf.ln(5)
 
-            # Desglose enfocado por noche + impuestos en el PDF contractual
+            # Desglose en PDF
             pdf.set_font("Helvetica", '', 11)
             pdf.cell(120, 8, "Upgrade Fee per Night (Net):")
             pdf.cell(70, 8, f"USD ${p_noche_neto:,.2f}", align='R', new_x="LMARGIN", new_y="NEXT")
