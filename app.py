@@ -60,7 +60,8 @@ def limpiar_valor_moneda(val):
         val_str = val_str.replace(',', '.')
         
     try:
-        return float(val_str)
+        res = float(val_str)
+        return 0.0 if pd.isna(res) else res
     except ValueError:
         return 0.0
 
@@ -79,7 +80,6 @@ def descargar_datos_puros_drive():
         datos_dif = ws_dif.get_all_records()
         df_d = pd.DataFrame(datos_dif)
         
-        # Cargar pestaña de rangos adicionales si existe
         df_rangos = pd.DataFrame()
         try:
             ws_rangos = doc.worksheet("rangos_especiales")
@@ -130,26 +130,9 @@ if df_config_raw is not None and 'config_global' not in st.session_state:
     while desc_raw > 100.0:
         desc_raw /= 100.0
 
-    dec_start_raw = config_dict.get("inicio_high_dec", 15.0)
-    while dec_start_raw > 31.0:
-        dec_start_raw /= 100.0
-    dec_start_val = max(1, min(31, int(dec_start_raw)))
-
-    ene_end_raw = config_dict.get("fin_high_ene", 4.0)
-    while ene_end_raw > 31.0:
-        ene_end_raw /= 100.0
-    ene_end_val = max(1, min(31, int(ene_end_raw)))
-
-    jr_high_raw = config_dict.get("junior_suite_high", 200.0)
-    if 0.0 < jr_high_raw < 10.0:
-        jr_high_raw *= 1000.0
-
     st.session_state['config_global'] = {
         "descuento": float(desc_raw),
-        "tc": float(tc_raw),
-        "inicio_high_dec": dec_start_val,
-        "fin_high_ene": ene_end_val,
-        "junior_suite_high": float(jr_high_raw)
+        "tc": float(tc_raw)
     }
 
 # Respaldos de emergencia
@@ -162,8 +145,7 @@ if 'matriz_diferenciales' not in st.session_state:
 
 if 'config_global' not in st.session_state:
     st.session_state['config_global'] = {
-        "descuento": 60.0, "tc": 17.40, 
-        "inicio_high_dec": 15, "fin_high_ene": 4, "junior_suite_high": 200.0
+        "descuento": 60.0, "tc": 17.40
     }
 
 # --- 3. MENÚ LATERAL: PANEL DE CONTROL DE REVENUE ---
@@ -182,14 +164,8 @@ with st.sidebar:
                 tc_input = st.number_input("Tipo de Cambio Oficial", min_value=1.0, max_value=100.0, value=float(st.session_state['config_global']['tc']), step=0.1)
                 
                 st.divider()
-                st.subheader("Reglas de Temporada Alta 🎄")
-                dec_start = st.number_input("Inicio Dic (Día)", min_value=1, max_value=31, value=int(st.session_state['config_global']['inicio_high_dec']))
-                ene_end = st.number_input("Fin Ene (Día)", min_value=1, max_value=31, value=int(st.session_state['config_global']['fin_high_ene']))
-                jr_high_val = st.number_input("Tarifa Temporada Alta ($)", min_value=0.0, value=float(st.session_state['config_global']['junior_suite_high']))
-                
-                st.divider()
-                st.subheader("Fechas Especiales Adicionales 📅")
-                st.info("💡 Agrega periodos específicos (ej. Semana Santa, puentes, eventos).")
+                st.subheader("Fechas Especiales y Temporadas Altas 📅")
+                st.info("💡 Agrega periodos específicos (ej. Fin de Año, Semana Santa, Bisbee's, eventos).")
                 df_rangos_editado = st.data_editor(
                     st.session_state['rangos_especiales'], 
                     num_rows="dynamic", 
@@ -202,7 +178,7 @@ with st.sidebar:
                 )
 
                 st.divider()
-                st.subheader("Editar Tarifas Estándar ($ USD)")
+                st.subheader("Editar Tarifas Estándar Mensuales ($ USD)")
                 matriz_actual = st.session_state['matriz_diferenciales'].copy()
                 df_editado = st.data_editor(matriz_actual, use_container_width=True)
                 
@@ -222,10 +198,7 @@ with st.sidebar:
                 st.session_state['rangos_especiales'] = df_rangos_editado
                 st.session_state['config_global'] = {
                     "descuento": desc_input,
-                    "tc": tc_input,
-                    "inicio_high_dec": int(dec_start),
-                    "fin_high_ene": int(ene_end),
-                    "junior_suite_high": jr_high_val
+                    "tc": tc_input
                 }
                 
                 try:
@@ -240,14 +213,11 @@ with st.sidebar:
                         ws_config.append_row(["parametro", "valor"])
                         ws_config.append_row(["descuento", float(st.session_state['config_global']['descuento'])])
                         ws_config.append_row(["tc", float(st.session_state['config_global']['tc'])])
-                        ws_config.append_row(["inicio_high_dec", int(st.session_state['config_global']['inicio_high_dec'])])
-                        ws_config.append_row(["fin_high_ene", int(st.session_state['config_global']['fin_high_ene'])])
-                        ws_config.append_row(["junior_suite_high", float(st.session_state['config_global']['junior_suite_high'])])
                         
                         # 2. Guardar pestaña diferenciales
                         ws_dif = doc_sheets.worksheet("diferenciales")
                         ws_dif.clear()
-                        df_subida = df_editado.reset_index()
+                        df_subida = df_editado.fillna(0.0).reset_index()
                         df_subida.rename(columns={"index": "mes"}, inplace=True)
                         ws_dif.update([df_subida.columns.values.tolist()] + df_subida.values.tolist())
                         
@@ -259,10 +229,13 @@ with st.sidebar:
                         
                         ws_rangos.clear()
                         df_r_subida = df_rangos_editado.copy()
-                        # Convertir fechas a string para serialización
+                        df_r_subida["Tarifa Base ($)"] = df_r_subida["Tarifa Base ($)"].fillna(0.0)
+                        
                         for col_fecha in ["Fecha Inicio", "Fecha Fin"]:
                             if col_fecha in df_r_subida.columns:
-                                df_r_subida[col_fecha] = df_r_subida[col_fecha].astype(str)
+                                df_r_subida[col_fecha] = df_r_subida[col_fecha].astype(str).replace({'None': '', 'nan': '', '<NaT>': ''})
+                        
+                        df_r_subida = df_r_subida.fillna("")
                         ws_rangos.update([df_r_subida.columns.values.tolist()] + df_r_subida.values.tolist())
 
                         st.cache_data.clear()
@@ -299,7 +272,7 @@ st.divider()
 
 ejecutar_calculo = st.button("🧮 Calcular", type="primary")
 
-# --- 5. LÓGICA DE CÁLCULO INTELIGENTE CON EXCEPCIONES Y FECHAS ADICIONALES ---
+# --- 5. LÓGICA DE CÁLCULO CIENTO POR CIENTO BASADA EN LA TABLA ---
 if noches <= 0:
     st.error("La fecha de salida debe ser posterior a la de entrada.")
 else:
@@ -307,46 +280,34 @@ else:
         total_diferenciales = 0.0
         
         cfg = st.session_state['config_global']
-        day_start_dec = cfg.get("inicio_high_dec", 15)
-        day_end_ene = cfg.get("fin_high_ene", 4)
-        jr_premium_base = cfg.get("junior_suite_high", 200.0)
         df_rangos = st.session_state.get('rangos_especiales', pd.DataFrame())
         
         for n in range(noches):
             fecha_noche = check_in + timedelta(days=n)
             num_mes = fecha_noche.month
-            dia_mes = fecha_noche.day
             nombre_mes = MESES[num_mes - 1]
             
             tarifa_especial_encontrada = None
             
-            # 1. Verificar si cae dentro de las fechas adicionales personalizadas
+            # 1. Buscar si la noche cae dentro de alguna regla de la tabla de rangos especiales
             if df_rangos is not None and not df_rangos.empty:
                 for _, fila in df_rangos.iterrows():
-                    f_ini = pd.to_datetime(fila.get("Fecha Inicio")).date() if pd.notna(fila.get("Fecha Inicio")) else None
-                    f_fin = pd.to_datetime(fila.get("Fecha Fin")).date() if pd.notna(fila.get("Fecha Fin")) else None
+                    f_ini = pd.to_datetime(fila.get("Fecha Inicio")).date() if pd.notna(fila.get("Fecha Inicio")) and str(fila.get("Fecha Inicio")).strip() != "" else None
+                    f_fin = pd.to_datetime(fila.get("Fecha Fin")).date() if pd.notna(fila.get("Fecha Fin")) and str(fila.get("Fecha Fin")).strip() != "" else None
                     monto = limpiar_valor_moneda(fila.get("Tarifa Base ($)"))
                     
                     if f_ini and f_fin and f_ini <= fecha_noche <= f_fin:
                         tarifa_especial_encontrada = monto
                         break
 
-            # 2. Asignar tarifa según la regla correspondiente
+            # 2. Si encontró un periodo especial en la tabla, recalcular la noche; si no, usar la tabla mensual estándar
             if tarifa_especial_encontrada is not None and tarifa_especial_encontrada > 0:
                 base_jr = tarifa_especial_encontrada
                 factor_orig = PROPORCIONES.get(cat_orig, 0.0)
                 factor_dest = PROPORCIONES.get(cat_dest, 0.0)
                 tarifa_orig_mes = float(round(base_jr * factor_orig, 2))
                 tarifa_dest_mes = float(round(base_jr * factor_dest, 2))
-            elif (num_mes == 12 and dia_mes >= day_start_dec) or (num_mes == 1 and dia_mes <= day_end_ene):
-                # Regla de Temporada Alta Navideña/Fin de Año
-                base_jr = jr_premium_base
-                factor_orig = PROPORCIONES.get(cat_orig, 0.0)
-                factor_dest = PROPORCIONES.get(cat_dest, 0.0)
-                tarifa_orig_mes = float(round(base_jr * factor_orig, 2))
-                tarifa_dest_mes = float(round(base_jr * factor_dest, 2))
             else:
-                # Regla Estándar Mensual
                 matriz = st.session_state['matriz_diferenciales']
                 tarifa_orig_mes = matriz.loc[nombre_mes, cat_orig]
                 tarifa_dest_mes = matriz.loc[nombre_mes, cat_dest]
