@@ -109,11 +109,30 @@ df_config_raw, df_diferenciales_raw, df_rangos_raw = cargar_y_procesar_datos()
 if df_diferenciales_raw is not None and 'matriz_diferenciales' not in st.session_state:
     st.session_state['matriz_diferenciales'] = df_diferenciales_raw
 
-if 'rangos_especiales' not in st.session_state:
-    if df_rangos_raw is not None and not df_rangos_raw.empty:
-        st.session_state['rangos_especiales'] = df_rangos_raw
+def preparar_df_rangos(df):
+    if df is None or df.empty:
+        df_res = pd.DataFrame(columns=["Nombre Temporada", "Fecha Inicio", "Fecha Fin", "Tarifa Base ($)"])
     else:
-        st.session_state['rangos_especiales'] = pd.DataFrame(columns=["Nombre Temporada", "Fecha Inicio", "Fecha Fin", "Tarifa Base ($)"])
+        df_res = df.copy()
+        
+    for col_f in ["Fecha Inicio", "Fecha Fin"]:
+        if col_f in df_res.columns:
+            df_res[col_f] = pd.to_datetime(df_res[col_f], errors='coerce').dt.date
+        else:
+            df_res[col_f] = None
+            
+    if "Tarifa Base ($)" in df_res.columns:
+        df_res["Tarifa Base ($)"] = df_res["Tarifa Base ($)"].apply(limpiar_valor_moneda)
+    else:
+        df_res["Tarifa Base ($)"] = 0.0
+        
+    if "Nombre Temporada" not in df_res.columns:
+        df_res["Nombre Temporada"] = ""
+        
+    return df_res[["Nombre Temporada", "Fecha Inicio", "Fecha Fin", "Tarifa Base ($)"]]
+
+if 'rangos_especiales' not in st.session_state:
+    st.session_state['rangos_especiales'] = preparar_df_rangos(df_rangos_raw)
 
 if df_config_raw is not None and 'config_global' not in st.session_state:
     config_dict = {}
@@ -166,8 +185,11 @@ with st.sidebar:
                 st.divider()
                 st.subheader("Fechas Especiales y Temporadas Altas 📅")
                 st.info("💡 Agrega periodos específicos (ej. Fin de Año, Semana Santa, Bisbee's, eventos).")
+                
+                df_rangos_preparado = preparar_df_rangos(st.session_state['rangos_especiales'])
+                
                 df_rangos_editado = st.data_editor(
-                    st.session_state['rangos_especiales'], 
+                    df_rangos_preparado, 
                     num_rows="dynamic", 
                     use_container_width=True,
                     column_config={
@@ -233,7 +255,7 @@ with st.sidebar:
                         
                         for col_fecha in ["Fecha Inicio", "Fecha Fin"]:
                             if col_fecha in df_r_subida.columns:
-                                df_r_subida[col_fecha] = df_r_subida[col_fecha].astype(str).replace({'None': '', 'nan': '', '<NaT>': ''})
+                                df_r_subida[col_fecha] = df_r_subida[col_fecha].astype(str).replace({'None': '', 'nan': '', '<NaT>': '', 'NaT': ''})
                         
                         df_r_subida = df_r_subida.fillna("")
                         ws_rangos.update([df_r_subida.columns.values.tolist()] + df_r_subida.values.tolist())
@@ -289,18 +311,16 @@ else:
             
             tarifa_especial_encontrada = None
             
-            # 1. Buscar si la noche cae dentro de alguna regla de la tabla de rangos especiales
             if df_rangos is not None and not df_rangos.empty:
                 for _, fila in df_rangos.iterrows():
-                    f_ini = pd.to_datetime(fila.get("Fecha Inicio")).date() if pd.notna(fila.get("Fecha Inicio")) and str(fila.get("Fecha Inicio")).strip() != "" else None
-                    f_fin = pd.to_datetime(fila.get("Fecha Fin")).date() if pd.notna(fila.get("Fecha Fin")) and str(fila.get("Fecha Fin")).strip() != "" else None
+                    f_ini = pd.to_datetime(fila.get("Fecha Inicio")).date() if pd.notna(fila.get("Fecha Inicio")) and str(fila.get("Fecha Inicio")).strip() not in ["", "None", "<NaT>", "NaT"] else None
+                    f_fin = pd.to_datetime(fila.get("Fecha Fin")).date() if pd.notna(fila.get("Fecha Fin")) and str(fila.get("Fecha Fin")).strip() not in ["", "None", "<NaT>", "NaT"] else None
                     monto = limpiar_valor_moneda(fila.get("Tarifa Base ($)"))
                     
                     if f_ini and f_fin and f_ini <= fecha_noche <= f_fin:
                         tarifa_especial_encontrada = monto
                         break
 
-            # 2. Si encontró un periodo especial en la tabla, recalcular la noche; si no, usar la tabla mensual estándar
             if tarifa_especial_encontrada is not None and tarifa_especial_encontrada > 0:
                 base_jr = tarifa_especial_encontrada
                 factor_orig = PROPORCIONES.get(cat_orig, 0.0)
